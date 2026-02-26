@@ -352,29 +352,48 @@ const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'colunas' | 'metadados' | 'tabelas' | 'referencias' | 'acesso'>('acesso');
   const [user, setUser] = useState<any>(null);
   const [isDisconnected, setIsDisconnected] = useState(false);
+  const [isCheckingModels, setIsCheckingModels] = useState(false);
 
   const checkAllModels = useCallback(async () => {
-    const updatedModels = [...availableModels];
-    const results = await Promise.all(updatedModels.map(async (model) => {
-      try {
-        const health = await checkModelHealth(model.id);
-        return { ...model, status: health.status };
-      } catch (e) {
-        return { ...model, status: 'busy' as AIModelStatus };
-      }
-    }));
+    if (isCheckingModels) return;
+    setIsCheckingModels(true);
     
-    const sortedModels = results.sort((a, b) => b.credits - a.credits);
-    setAvailableModels(sortedModels);
+    try {
+      // Usamos o estado atual de availableModels para manter os créditos
+      setAvailableModels(prev => {
+        const modelsToProcess = [...prev];
+        
+        // Iniciamos a verificação assíncrona
+        Promise.all(modelsToProcess.map(async (model) => {
+          try {
+            const health = await checkModelHealth(model.id);
+            return { ...model, status: health.status };
+          } catch (e) {
+            return { ...model, status: 'busy' as AIModelStatus };
+          }
+        })).then(results => {
+          const sortedModels = results.sort((a, b) => b.credits - a.credits);
+          setAvailableModels(sortedModels);
+          
+          // Se o modelo selecionado não estiver estável, tenta selecionar o melhor disponível
+          const currentSelected = sortedModels.find(m => m.id === selectedModel);
+          if (!currentSelected || currentSelected.status !== 'stable') {
+            const bestModel = sortedModels.find(m => m.status === 'stable' && m.credits > 0);
+            if (bestModel) setSelectedModel(bestModel.id);
+          }
+          setIsCheckingModels(false);
+        });
 
-    const currentSelected = sortedModels.find(m => m.id === selectedModel);
-    if (!currentSelected || currentSelected.status !== 'stable') {
-      const bestModel = sortedModels.find(m => m.status === 'stable' && m.credits > 0);
-      if (bestModel) setSelectedModel(bestModel.id);
+        return prev; // Retorna o estado atual enquanto processa
+      });
+    } catch (err) {
+      console.error("Error checking models:", err);
+      setIsCheckingModels(false);
     }
-  }, [availableModels, selectedModel]);
+  }, [selectedModel]);
 
   useEffect(() => {
+    // Busca usuário inicial
     fetch('/api/auth/me')
       .then(res => res.json())
       .then(data => {
@@ -605,7 +624,11 @@ const App: React.FC = () => {
 
     await Promise.all(files.map(async (file) => {
       const currentModelData = availableModels.find(m => m.id === selectedModel);
-      if (currentModelData && (currentModelData.credits <= 0 || currentModelData.status === 'no-credits')) return;
+      // Permitimos processar se o status for 'unknown' ou 'busy', bloqueamos apenas se for 'no-credits'
+      if (currentModelData && currentModelData.status === 'no-credits') {
+        console.warn(`Model ${selectedModel} blocked due to no-credits status`);
+        return;
+      }
       setLaudoProgress(p => ({ ...p, [file.name]: { name: file.name, progress: 10, status: 'loading' } }));
       try {
         const text = await fileToText(file);
@@ -690,7 +713,7 @@ const App: React.FC = () => {
     setCurrentStep(4);
     await Promise.all(files.map(async (file) => {
       const currentModelData = availableModels.find(m => m.id === selectedModel);
-      if (currentModelData && (currentModelData.credits <= 0 || currentModelData.status === 'no-credits')) return;
+      if (currentModelData && currentModelData.status === 'no-credits') return;
       setOsProgress(p => ({ ...p, [file.name]: { name: file.name, progress: 10, status: 'loading' } }));
       try {
         const text = await fileToText(file);
@@ -1504,7 +1527,7 @@ const App: React.FC = () => {
           <div className="flex items-center gap-3 w-full sm:w-auto">
             <button 
               onClick={() => { setTempSettings(settings); setIsSettingsOpen(true); }}
-              className={`w-9 h-9 sm:w-10 sm:h-10 rounded-xl flex items-center justify-center text-white font-black text-base shadow-lg shrink-0 transition-all active:scale-95 border-2 ${(!isDisconnected && user) ? 'bg-emerald-600 border-emerald-400' : 'bg-blue-600 border-red-500'}`}
+              className={`w-9 h-9 sm:w-10 sm:h-10 rounded-xl flex items-center justify-center text-white font-black text-base shadow-lg shrink-0 transition-all active:scale-95 border-2 ${user ? 'bg-emerald-600 border-emerald-400' : 'bg-blue-600 border-red-500'}`}
             >
               SG
             </button>
@@ -1517,11 +1540,10 @@ const App: React.FC = () => {
             {currentModel && <CreditMeter model={currentModel} />}
             <select value={selectedModel} onChange={(e) => setSelectedModel(e.target.value as AIModelId)} className="bg-white border border-slate-200 rounded-xl px-3 py-1.5 text-[10px] font-black outline-none shadow-sm cursor-pointer">
               {availableModels
-                .filter(m => m.status === 'stable' || m.status === 'busy')
                 .map((m: AIModelConfig) => {
                   const perc = (m.credits / m.maxCredits) * 100;
                   const icon = m.status === 'no-credits' || m.credits === 0 ? '🔴' : (perc < 30 ? '🟠' : '🟢');
-                  const statusText = m.status === 'stable' ? 'DISPONÍVEL' : (m.status === 'no-credits' ? 'SEM SALDO' : 'VERIFICANDO');
+                  const statusText = m.status === 'stable' ? 'DISPONÍVEL' : (m.status === 'no-credits' ? 'SEM SALDO' : (m.status === 'busy' ? 'OCUPADO' : 'VERIFICANDO'));
                   return (
                     <option key={m.id} value={m.id}>
                       {icon} {m.name} — {m.credits} UN ({statusText})

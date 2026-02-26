@@ -38,19 +38,18 @@ function getModelConfig(modelId: AIModelId) {
  */
 export async function checkModelHealth(modelId: AIModelId): Promise<{ status: 'stable' | 'no-credits' | 'busy' }> {
   try {
-    const apiKey = process.env.GEMINI_API_KEY;
+    const apiKey = process.env.GEMINI_API_KEY || process.env.API_KEY;
     if (!apiKey) return { status: 'busy' };
     
     const ai = new GoogleGenAI({ apiKey });
-    // Fix: When maxOutputTokens is set, thinkingBudget must also be set for Gemini 3/2.5 models to prevent thinking from consuming all tokens.
+    
+    // Simplificamos a chamada de saúde para evitar erros de configuração de thinking
     const response = await ai.models.generateContent({
       model: modelId,
       contents: "Responda apenas: OK",
       config: { 
-        maxOutputTokens: 10,
-        ...(modelId.includes('gemini-3') || modelId.includes('gemini-2.5') ? {
-          thinkingConfig: { thinkingBudget: 0 }
-        } : {})
+        maxOutputTokens: 5,
+        temperature: 0.1
       }
     });
     
@@ -60,7 +59,8 @@ export async function checkModelHealth(modelId: AIModelId): Promise<{ status: 's
     return { status: 'busy' };
   } catch (error: any) {
     const msg = String(error?.message || "").toUpperCase();
-    if (msg.includes("429") || msg.includes("QUOTA") || msg.includes("LIMIT") || msg.includes("CREDIT") || msg.includes("CREDITS")) {
+    console.warn(`Health check failed for ${modelId}:`, msg);
+    if (msg.includes("429") || msg.includes("QUOTA") || msg.includes("LIMIT") || msg.includes("CREDIT") || msg.includes("CREDITS") || msg.includes("NOT_FOUND")) {
       return { status: 'no-credits' };
     }
     return { status: 'busy' };
