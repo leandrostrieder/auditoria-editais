@@ -162,8 +162,10 @@ function superNormalize(str: string): string {
  * Resolve problemas onde o texto original está fragmentado em múltiplas tags <w:t> ou parágrafos.
  */
 function applyMetadataSurgical(xmlDoc: Document, metadata: DocField[]) {
-  // Coleta todos os nós de texto em ordem sequencial
-  const tNodes = Array.from(xmlDoc.getElementsByTagName("w:t"));
+  // Coleta todos os nós de texto em ordem sequencial de forma robusta
+  const allNodes = Array.from(xmlDoc.getElementsByTagName("*"));
+  const tNodes = allNodes.filter(n => n.nodeName === 'w:t' || n.localName === 't');
+  
   if (tNodes.length === 0) return;
 
   // Cria um fluxo de texto virtual para busca, normalizando espaços e quebras de parágrafo virtuais
@@ -227,6 +229,11 @@ export async function generateNoticeDocument(
   tableRules: Record<string, TableRuleConfig>
 ): Promise<void> {
   try {
+    if (typeof JSZip === 'undefined') throw new Error("Biblioteca JSZip não carregada.");
+    if (format === 'pdf' && (typeof mammoth === 'undefined' || typeof html2pdf === 'undefined')) {
+      throw new Error("Bibliotecas de PDF (mammoth/html2pdf) não carregadas.");
+    }
+
     const zip = new JSZip();
     const content = await templateFile.arrayBuffer();
     const loadedZip = await zip.loadAsync(content);
@@ -244,7 +251,8 @@ export async function generateNoticeDocument(
     // APLICAÇÃO CIRÚRGICA DOS METADADOS EM FLUXO CONTÍNUO
     applyMetadataSurgical(xmlDoc, metadata);
 
-    const paragraphs = Array.from(xmlDoc.getElementsByTagName("w:p"));
+    const allNodes = Array.from(xmlDoc.getElementsByTagName("*"));
+    const paragraphs = allNodes.filter(n => n.nodeName === 'w:p' || n.localName === 'p');
     const wordNS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
 
     Object.entries(tableRules).forEach(([cat, config]) => {
@@ -321,12 +329,19 @@ export async function generateNoticeDocument(
     const serializer = new XMLSerializer();
     let finalXml = serializer.serializeToString(xmlDoc);
 
-    const documentTagMatch = finalXml.match(/<w:document[^>]*>/);
-    if (documentTagMatch) {
-        const rootTag = documentTagMatch[0];
-        let body = finalXml.substring(rootTag.length);
-        body = body.replace(/\sxmlns:w=["'][^"']*["']/g, "");
-        finalXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n' + rootTag + body;
+    // Limpeza de namespaces redundantes que podem corromper o DOCX no Word
+    // e garantia de um cabeçalho XML limpo e compatível.
+    try {
+      const rootElement = xmlDoc.documentElement;
+      const rootXml = serializer.serializeToString(rootElement);
+      // Remove declarações de namespace duplicadas que o serializador pode ter inserido nos nós filhos
+      const cleanedRootXml = rootXml.replace(/ xmlns:w="http:\/\/schemas\.openxmlformats\.org\/wordprocessingml\/2006\/main"/g, (match, offset) => {
+        // Mantém apenas a primeira ocorrência (no nó raiz)
+        return offset === rootXml.indexOf('xmlns:w=') ? match : "";
+      });
+      finalXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n' + cleanedRootXml;
+    } catch (e) {
+      console.warn("Falha na limpeza fina do XML, usando serialização padrão:", e);
     }
 
     loadedZip.file("word/document.xml", finalXml);
@@ -347,7 +362,8 @@ export async function generateNoticeDocument(
       saveAs(finalBlob, `${fileName}.docx`);
     }
   } catch (error) {
-    console.error("Erro na geração:", error);
-    alert("Falha ao gerar documento.");
+    console.error("Erro detalhado na geração:", error);
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    alert(`Falha ao gerar documento: ${errorMsg}`);
   }
 }

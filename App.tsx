@@ -351,24 +351,52 @@ const App: React.FC = () => {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<'colunas' | 'metadados' | 'tabelas' | 'referencias' | 'acesso'>('acesso');
   const [user, setUser] = useState<any>(null);
+  const [isDisconnected, setIsDisconnected] = useState(false);
+
+  const checkAllModels = useCallback(async () => {
+    const updatedModels = [...availableModels];
+    const results = await Promise.all(updatedModels.map(async (model) => {
+      try {
+        const health = await checkModelHealth(model.id);
+        return { ...model, status: health.status };
+      } catch (e) {
+        return { ...model, status: 'busy' as AIModelStatus };
+      }
+    }));
+    
+    const sortedModels = results.sort((a, b) => b.credits - a.credits);
+    setAvailableModels(sortedModels);
+
+    const currentSelected = sortedModels.find(m => m.id === selectedModel);
+    if (!currentSelected || currentSelected.status !== 'stable') {
+      const bestModel = sortedModels.find(m => m.status === 'stable' && m.credits > 0);
+      if (bestModel) setSelectedModel(bestModel.id);
+    }
+  }, [availableModels, selectedModel]);
 
   useEffect(() => {
     fetch('/api/auth/me')
       .then(res => res.json())
-      .then(data => setUser(data.user))
+      .then(data => {
+        if (data.user) {
+          setUser(data.user);
+          setIsDisconnected(false);
+        }
+      })
       .catch(err => console.error("Error fetching user:", err));
 
     const handleMessage = (event: MessageEvent) => {
       if (event.data?.type === 'OAUTH_AUTH_SUCCESS') {
         console.log("OAuth success message received, fetching user data...");
-        // Pequeno delay para garantir que o cookie da sessão foi processado pelo navegador
         setTimeout(() => {
           fetch('/api/auth/me')
             .then(res => res.json())
             .then(data => {
               if (data.user) {
                 setUser(data.user);
+                setIsDisconnected(false);
                 console.log("User authenticated successfully:", data.user.name);
+                checkAllModels();
               } else {
                 console.warn("OAuth success message received but /api/auth/me returned null user");
               }
@@ -379,7 +407,7 @@ const App: React.FC = () => {
     };
     window.addEventListener('message', handleMessage);
     return () => window.removeEventListener('message', handleMessage);
-  }, []);
+  }, [checkAllModels]);
 
   const handleGoogleLogin = async (forceSelect = false) => {
     // Abre o popup imediatamente para manter o contexto de ação do usuário e evitar bloqueios
@@ -430,6 +458,7 @@ const App: React.FC = () => {
     try {
       await fetch('/api/auth/logout', { method: 'POST' });
       setUser(null);
+      setIsDisconnected(true);
     } catch (err) {
       console.error("Error logging out:", err);
     }
@@ -444,22 +473,7 @@ const App: React.FC = () => {
   const [tempSettings, setTempSettings] = useState<AppSettings>(settings);
 
   useEffect(() => {
-    const checkAll = async () => {
-      const updatedModels = [...availableModels];
-      for (let i = 0; i < updatedModels.length; i++) {
-        try {
-          const health = await checkModelHealth(updatedModels[i].id);
-          updatedModels[i] = { ...updatedModels[i], status: health.status };
-        } catch (e) {}
-      }
-      
-      const sortedModels = updatedModels.sort((a, b) => b.credits - a.credits);
-      setAvailableModels(sortedModels);
-
-      const bestModel = sortedModels.find(m => m.status === 'stable' && m.credits > 0);
-      if (bestModel) setSelectedModel(bestModel.id);
-    };
-    checkAll();
+    checkAllModels();
   }, []);
 
   const decrementCredits = useCallback((modelId: AIModelId) => {
@@ -1436,7 +1450,7 @@ const App: React.FC = () => {
                       <h4 className="text-[10px] font-black text-slate-900 uppercase mb-2">Conta não vinculada</h4>
                       <p className="text-[9px] text-slate-400 font-bold uppercase mb-6">Autentique-se para habilitar a referência IA</p>
                       <button 
-                        onClick={handleGoogleLogin}
+                        onClick={() => handleGoogleLogin(true)}
                         className="px-8 py-4 bg-white border border-slate-200 rounded-2xl shadow-sm hover:shadow-md hover:border-blue-200 transition-all flex items-center gap-3 group"
                       >
                         <span className="text-[10px] font-black text-slate-700 uppercase group-hover:text-blue-600">Conectar com Google</span>
@@ -1490,7 +1504,7 @@ const App: React.FC = () => {
           <div className="flex items-center gap-3 w-full sm:w-auto">
             <button 
               onClick={() => { setTempSettings(settings); setIsSettingsOpen(true); }}
-              className={`w-9 h-9 sm:w-10 sm:h-10 rounded-xl flex items-center justify-center text-white font-black text-base shadow-lg shrink-0 transition-all active:scale-95 border-2 ${user ? 'bg-emerald-600 border-emerald-400' : 'bg-blue-600 border-red-500'}`}
+              className={`w-9 h-9 sm:w-10 sm:h-10 rounded-xl flex items-center justify-center text-white font-black text-base shadow-lg shrink-0 transition-all active:scale-95 border-2 ${(!isDisconnected && user) ? 'bg-emerald-600 border-emerald-400' : 'bg-blue-600 border-red-500'}`}
             >
               SG
             </button>
@@ -1502,15 +1516,18 @@ const App: React.FC = () => {
           <div className="flex flex-col sm:flex-row items-center gap-4 sm:gap-8 w-full sm:w-auto">
             {currentModel && <CreditMeter model={currentModel} />}
             <select value={selectedModel} onChange={(e) => setSelectedModel(e.target.value as AIModelId)} className="bg-white border border-slate-200 rounded-xl px-3 py-1.5 text-[10px] font-black outline-none shadow-sm cursor-pointer">
-              {availableModels.map((m: AIModelConfig) => {
-                const perc = (m.credits / m.maxCredits) * 100;
-                const icon = m.status === 'no-credits' || m.credits === 0 ? '🔴' : (perc < 30 ? '🟠' : '🟢');
-                return (
-                  <option key={m.id} value={m.id}>
-                    {icon} {m.name} — {m.credits} UN
-                  </option>
-                );
-              })}
+              {availableModels
+                .filter(m => m.status === 'stable' || m.status === 'busy')
+                .map((m: AIModelConfig) => {
+                  const perc = (m.credits / m.maxCredits) * 100;
+                  const icon = m.status === 'no-credits' || m.credits === 0 ? '🔴' : (perc < 30 ? '🟠' : '🟢');
+                  const statusText = m.status === 'stable' ? 'DISPONÍVEL' : (m.status === 'no-credits' ? 'SEM SALDO' : 'VERIFICANDO');
+                  return (
+                    <option key={m.id} value={m.id}>
+                      {icon} {m.name} — {m.credits} UN ({statusText})
+                    </option>
+                  );
+                })}
             </select>
             <button onClick={() => window.location.reload()} className="px-4 py-2 bg-slate-100 text-slate-500 border border-slate-200 rounded-xl text-[9px] font-black uppercase hover:bg-red-50 hover:text-red-600 transition-all">Reiniciar</button>
           </div>
