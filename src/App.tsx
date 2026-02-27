@@ -388,11 +388,19 @@ const App: React.FC = () => {
   const [isDisconnected, setIsDisconnected] = useState(false);
   const [isCheckingModels, setIsCheckingModels] = useState(false);
   const [hasGeminiKey, setHasGeminiKey] = useState(false);
+  const [manualKey, setManualKey] = useState<string>(() => localStorage.getItem('sg_manual_api_key') || '');
 
-  // Verifica se o usuário selecionou uma chave de API no AI Studio
+  // Verifica se o usuário selecionou uma chave de API no AI Studio ou se há uma manual
   const checkGeminiKey = useCallback(async () => {
     console.log("Checking Gemini Key...");
     try {
+      // 0. Verifica se há uma chave manual salva
+      if (manualKey && manualKey.length > 10) {
+        setApiKey(manualKey);
+        setHasGeminiKey(true);
+        return true;
+      }
+
       // 1. Verifica se a chave está injetada no ambiente (process.env ou window.process.env)
       // @ts-ignore
       const globalProcess = (typeof window !== 'undefined' && (window as any).process) || (typeof process !== 'undefined' ? process : null);
@@ -442,6 +450,21 @@ const App: React.FC = () => {
     return false;
   }, []);
 
+  const handleSaveManualKey = () => {
+    if (manualKey.trim()) {
+      localStorage.setItem('sg_manual_api_key', manualKey.trim());
+      setApiKey(manualKey.trim());
+      setHasGeminiKey(true);
+      checkAllModels();
+      alert("Chave de API manual salva com sucesso!");
+    } else {
+      localStorage.removeItem('sg_manual_api_key');
+      setManualKey('');
+      checkGeminiKey();
+      alert("Chave manual removida. O sistema tentará usar a chave do servidor.");
+    }
+  };
+
   const handleSelectGeminiKey = async () => {
     try {
       if (window.aistudio && typeof window.aistudio.openSelectKey === 'function') {
@@ -481,11 +504,12 @@ const App: React.FC = () => {
         const updated = prev.map(m => {
           const res = results.find(r => r.id === m.id);
           if (res) {
+            console.log(`Model ${m.id} health check: ${res.status}. Current credits: ${m.credits}`);
             return { 
               ...m, 
               status: res.status, 
               lastError: res.lastError,
-              // Se o status for no-credits e ainda tiver créditos, força a zerar para refletir a realidade da API
+              // SÓ força a zerar se o status for explicitamente 'no-credits' (Erro 429)
               credits: res.status === 'no-credits' ? 0 : m.credits
             };
           }
@@ -1721,18 +1745,47 @@ const App: React.FC = () => {
                               </p>
                             </div>
                           </div>
-                          <button 
-                            onClick={handleSelectGeminiKey}
-                            className={`px-4 py-2 rounded-xl text-[9px] font-black uppercase transition-all border ${hasGeminiKey ? 'bg-white text-emerald-600 border-emerald-200 hover:bg-emerald-50' : 'bg-orange-600 text-white border-orange-500 hover:bg-orange-700'}`}
-                          >
-                            {hasGeminiKey ? 'Alterar Chave' : 'Vincular Chave'}
-                          </button>
+                          <div className="flex gap-2">
+                            {window.aistudio && (
+                              <button 
+                                onClick={handleSelectGeminiKey}
+                                className={`px-4 py-2 rounded-xl text-[9px] font-black uppercase transition-all border ${hasGeminiKey ? 'bg-white text-emerald-600 border-emerald-200 hover:bg-emerald-50' : 'bg-orange-600 text-white border-orange-500 hover:bg-orange-700'}`}
+                              >
+                                {hasGeminiKey ? 'Alterar Chave' : 'Vincular Chave'}
+                              </button>
+                            )}
+                          </div>
                         </div>
+
+                        <div className="space-y-3 p-4 bg-white rounded-2xl border border-emerald-100">
+                          <div className="flex flex-col gap-1">
+                            <label className="text-[8px] font-black text-slate-400 uppercase">Configuração Manual (Ambiente Externo)</label>
+                            <div className="flex gap-2">
+                              <input 
+                                type="password" 
+                                value={manualKey}
+                                onChange={(e) => setManualKey(e.target.value)}
+                                placeholder="Insira sua GEMINI_API_KEY..."
+                                className="flex-1 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-[10px] font-mono outline-none focus:ring-1 focus:ring-emerald-500"
+                              />
+                              <button 
+                                onClick={handleSaveManualKey}
+                                className="px-4 py-2 bg-emerald-600 text-white rounded-xl text-[9px] font-black uppercase hover:bg-emerald-700 transition-all"
+                              >
+                                Salvar
+                              </button>
+                            </div>
+                          </div>
+                          <p className="text-[7px] text-slate-400 font-medium leading-relaxed">
+                            Se o sistema não detectar créditos automaticamente, insira sua chave pessoal acima. Obtenha uma chave gratuita em <a href="https://aistudio.google.com/app/apikey" target="_blank" className="text-blue-500 underline">Google AI Studio</a>.
+                          </p>
+                        </div>
+
                         {!hasGeminiKey && (
                           <div className="p-3 bg-white/50 rounded-xl border border-emerald-100">
                             <p className="text-[8px] font-bold text-emerald-800 uppercase mb-1">Dica para Ambiente Externo:</p>
                             <p className="text-[8px] text-emerald-700 leading-relaxed">
-                              Se você estiver acessando fora do AI Studio, certifique-se de configurar a variável de ambiente <code className="bg-emerald-100 px-1 rounded">GEMINI_API_KEY</code> no seu servidor de hospedagem.
+                              Se você estiver acessando fora do AI Studio, certifique-se de configurar a variável de ambiente <code className="bg-emerald-100 px-1 rounded">GEMINI_API_KEY</code> no seu servidor de hospedagem ou use o campo manual acima.
                             </p>
                           </div>
                         )}

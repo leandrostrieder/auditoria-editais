@@ -88,12 +88,12 @@ export async function checkModelHealth(modelId: AIModelId): Promise<{ status: AI
     const msg = String(error?.message || "").toUpperCase();
     console.warn(`Health check failed for ${modelId}:`, msg);
     
+    if (msg.includes("429") || msg.includes("RESOURCE_EXHAUSTED") || msg.includes("QUOTA_EXCEEDED")) {
+      return { status: 'no-credits', error: "Cota de API excedida ou sem créditos disponíveis." };
+    }
+
     if (msg.includes("401") || msg.includes("403") || msg.includes("API_KEY_INVALID") || msg.includes("INVALID_ARGUMENT") || msg.includes("PERMISSION_DENIED")) {
       return { status: 'invalid-key', error: error?.message || "Erro de autenticação (Chave Inválida)." };
-    }
-    
-    if (msg.includes("429") || msg.includes("QUOTA") || msg.includes("LIMIT") || msg.includes("CREDIT") || msg.includes("CREDITS")) {
-      return { status: 'no-credits', error: "Cota de API excedida ou sem créditos disponíveis." };
     }
 
     if (msg.includes("404") || msg.includes("NOT_FOUND") || msg.includes("MODEL_NOT_FOUND")) {
