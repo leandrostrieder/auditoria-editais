@@ -257,13 +257,16 @@ const applyRule = (originalValue: any, rule: ColumnRule): any => {
   return originalValue;
 };
 
-const CreditMeter: React.FC<{ model: AIModelConfig }> = ({ model }) => {
+const CreditMeter: React.FC<{ model: AIModelConfig; hasKey: boolean }> = ({ model, hasKey }) => {
   const percentage = (model.credits / model.maxCredits) * 100;
   let statusColor = "bg-emerald-500 shadow-emerald-500/50";
   let textColor = "text-emerald-600";
   let dotColor = "bg-emerald-500";
   let label = "CONFIÁVEL";
-  if (model.status === 'no-credits' || model.credits === 0) {
+  
+  if (!hasKey) {
+    statusColor = "bg-orange-500 shadow-orange-500/50"; textColor = "text-orange-600"; dotColor = "bg-orange-500"; label = "SEM CHAVE";
+  } else if (model.status === 'no-credits' || model.credits === 0) {
     statusColor = "bg-red-500 shadow-red-500/50"; textColor = "text-red-600"; dotColor = "bg-red-500"; label = "BLOQUEADO";
   } else if (model.status === 'busy' || percentage < 30) {
     statusColor = "bg-orange-500 shadow-orange-500/50"; textColor = "text-orange-600"; dotColor = "bg-orange-500"; label = "ATENÇÃO";
@@ -375,6 +378,16 @@ const App: React.FC = () => {
   // Verifica se o usuário selecionou uma chave de API no AI Studio
   const checkGeminiKey = useCallback(async () => {
     try {
+      // Verifica primeiro se a chave está injetada no ambiente (process.env ou window.process.env)
+      // @ts-ignore
+      const globalProcess = (typeof window !== 'undefined' && (window as any).process) || (typeof process !== 'undefined' ? process : null);
+      const envKey = globalProcess?.env?.GEMINI_API_KEY || globalProcess?.env?.API_KEY;
+      
+      if (envKey) {
+        setHasGeminiKey(true);
+        return true;
+      }
+
       if (window.aistudio && typeof window.aistudio.hasSelectedApiKey === 'function') {
         const hasKey = await window.aistudio.hasSelectedApiKey();
         setHasGeminiKey(hasKey);
@@ -470,6 +483,9 @@ const App: React.FC = () => {
     // Verifica chave Gemini inicial
     checkGeminiKey();
 
+    // Verifica periodicamente se a chave foi injetada (útil para ambientes de preview)
+    const keyCheckInterval = setInterval(checkGeminiKey, 5000);
+
     const handleMessage = (event: MessageEvent) => {
       if (event.data?.type === 'OAUTH_AUTH_SUCCESS') {
         console.log("OAuth success message received, fetching user data...");
@@ -489,10 +505,13 @@ const App: React.FC = () => {
       }
     };
     window.addEventListener('message', handleMessage);
-    return () => window.removeEventListener('message', handleMessage);
+    return () => {
+      window.removeEventListener('message', handleMessage);
+      clearInterval(keyCheckInterval);
+    };
   }, [checkGeminiKey, isDisconnected]);
 
-  // Sincroniza modelos sempre que o usuário mudar
+  // Sincroniza modelos sempre que o usuário ou a chave mudar
   useEffect(() => {
     if (user) {
       // Carrega créditos do localStorage se existirem para este usuário
@@ -511,7 +530,7 @@ const App: React.FC = () => {
       }
       checkAllModels();
     }
-  }, [user, checkAllModels]);
+  }, [user, hasGeminiKey, checkAllModels]);
 
   const handleGoogleLogin = async (forceSelect = false) => {
     // Abre o popup imediatamente para manter o contexto de ação do usuário e evitar bloqueios
@@ -710,7 +729,7 @@ const App: React.FC = () => {
     
     // Verifica se há chave Gemini antes de processar
     const hasKey = await checkGeminiKey();
-    if (!hasKey && !process.env.GEMINI_API_KEY && !process.env.API_KEY) {
+    if (!hasKey) {
       alert("⚠️ Chave Gemini não detectada! Por favor, acesse as Configurações > Acesso e vincule sua chave de faturamento para processar os laudos.");
       setIsSettingsOpen(true);
       setActiveTab('acesso');
@@ -825,7 +844,7 @@ const App: React.FC = () => {
     
     // Verifica se há chave Gemini antes de processar
     const hasKey = await checkGeminiKey();
-    if (!hasKey && !process.env.GEMINI_API_KEY && !process.env.API_KEY) {
+    if (!hasKey) {
       alert("⚠️ Chave Gemini não detectada! Por favor, acesse as Configurações > Acesso e vincule sua chave de faturamento para processar a Ordem de Serviço.");
       setIsSettingsOpen(true);
       setActiveTab('acesso');
@@ -1704,7 +1723,7 @@ const App: React.FC = () => {
             </div>
           </div>
           <div className="flex flex-col sm:flex-row items-center gap-4 sm:gap-8 w-full sm:w-auto">
-            {currentModel && <CreditMeter model={currentModel} />}
+            {currentModel && <CreditMeter model={currentModel} hasKey={hasGeminiKey} />}
             <select value={selectedModel} onChange={(e) => setSelectedModel(e.target.value as AIModelId)} className="bg-white border border-slate-200 rounded-xl px-3 py-1.5 text-[10px] font-black outline-none shadow-sm cursor-pointer">
               {availableModels
                 .map((m: AIModelConfig) => {

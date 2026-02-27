@@ -40,9 +40,8 @@ function getApiKey(): string {
   // @ts-ignore - process.env pode ser injetado globalmente no browser pelo AI Studio
   let key = null;
   try {
-    if (typeof process !== 'undefined' && process.env) {
-      key = process.env.GEMINI_API_KEY || process.env.API_KEY;
-    }
+    const globalProcess = (typeof window !== 'undefined' && (window as any).process) || (typeof process !== 'undefined' ? process : null);
+    key = globalProcess?.env?.GEMINI_API_KEY || globalProcess?.env?.API_KEY;
   } catch (e) {}
 
   if (key) return key;
@@ -59,10 +58,9 @@ export async function checkModelHealth(modelId: AIModelId): Promise<{ status: 's
     const apiKey = getApiKey();
     if (!apiKey) {
       console.warn(`Health check skipped for ${modelId}: No API Key found.`);
-      return { status: 'busy' };
+      return { status: 'busy' }; // Retornamos busy para indicar que não está pronto
     }
     
-    console.log(`Checking health for ${modelId} using key: ${apiKey.substring(0, 4)}...${apiKey.substring(apiKey.length - 4)}`);
     const ai = new GoogleGenAI({ apiKey });
     
     // Simplificamos a chamada de saúde para evitar erros de configuração de thinking
@@ -82,7 +80,13 @@ export async function checkModelHealth(modelId: AIModelId): Promise<{ status: 's
   } catch (error: any) {
     const msg = String(error?.message || "").toUpperCase();
     console.warn(`Health check failed for ${modelId}:`, msg);
-    if (msg.includes("429") || msg.includes("QUOTA") || msg.includes("LIMIT") || msg.includes("CREDIT") || msg.includes("CREDITS") || msg.includes("NOT_FOUND")) {
+    
+    // Se o erro for de autenticação ou chave não encontrada, tratamos como no-credits
+    if (msg.includes("401") || msg.includes("403") || msg.includes("API_KEY_INVALID") || msg.includes("NOT_FOUND") || msg.includes("PERMISSION_DENIED")) {
+      return { status: 'no-credits' };
+    }
+    
+    if (msg.includes("429") || msg.includes("QUOTA") || msg.includes("LIMIT") || msg.includes("CREDIT") || msg.includes("CREDITS")) {
       return { status: 'no-credits' };
     }
     return { status: 'busy' };
