@@ -400,11 +400,13 @@ const App: React.FC = () => {
   };
 
   const checkAllModels = useCallback(async () => {
-    // Usamos um sinalizador simples para evitar múltiplas verificações simultâneas
     setIsCheckingModels(true);
     
-    // Reset imediato para estado de "Verificando" e restauração de créditos (mock)
-    setAvailableModels(INITIAL_MODELS.map(m => ({ ...m, status: 'unknown' })));
+    // Preserva os créditos atuais se existirem, senão usa os iniciais
+    setAvailableModels(prev => {
+      const current = prev.length > 0 ? prev : INITIAL_MODELS;
+      return current.map(m => ({ ...m, status: 'unknown' }));
+    });
     
     // Verifica a chave antes de testar os modelos
     await checkGeminiKey();
@@ -419,15 +421,23 @@ const App: React.FC = () => {
         }
       }));
       
-      const sortedModels = results.sort((a, b) => b.credits - a.credits);
-      setAvailableModels(sortedModels);
+      setAvailableModels(prev => {
+        const updated = prev.map(m => {
+          const res = results.find(r => r.id === m.id);
+          return res ? { ...m, status: res.status } : m;
+        });
+        return [...updated].sort((a, b) => b.credits - a.credits);
+      });
 
       // Tenta manter o modelo selecionado ou escolhe o melhor disponível
-      const currentSelected = sortedModels.find(m => m.id === selectedModel);
-      if (!currentSelected || currentSelected.status !== 'stable') {
-        const bestModel = sortedModels.find(m => m.status === 'stable' && m.credits > 0);
-        if (bestModel) setSelectedModel(bestModel.id);
-      }
+      setAvailableModels(prev => {
+        const currentSelected = prev.find(m => m.id === selectedModel);
+        if (!currentSelected || currentSelected.status !== 'stable') {
+          const bestModel = prev.find(m => m.status === 'stable' && m.credits > 0);
+          if (bestModel) setSelectedModel(bestModel.id);
+        }
+        return prev;
+      });
     } catch (err) {
       console.error("Error checking models:", err);
     } finally {
@@ -485,6 +495,20 @@ const App: React.FC = () => {
   // Sincroniza modelos sempre que o usuário mudar
   useEffect(() => {
     if (user) {
+      // Carrega créditos do localStorage se existirem para este usuário
+      const storageKey = `sg_credits_${user.email || 'guest'}`;
+      const savedCredits = localStorage.getItem(storageKey);
+      if (savedCredits) {
+        try {
+          const parsed = JSON.parse(savedCredits);
+          setAvailableModels(prev => prev.map(m => {
+            const saved = parsed.find((p: any) => p.id === m.id);
+            return saved ? { ...m, credits: saved.credits, status: saved.credits === 0 ? 'no-credits' : m.status } : m;
+          }));
+        } catch (e) {
+          console.error("Erro ao carregar créditos salvos:", e);
+        }
+      }
       checkAllModels();
     }
   }, [user, checkAllModels]);
@@ -539,8 +563,6 @@ const App: React.FC = () => {
       await fetch('/api/auth/logout', { method: 'POST' });
       setUser(null);
       setIsDisconnected(true);
-      // Limpa cache da chave de API
-      localStorage.removeItem('SG_GEMINI_API_KEY');
       // Reset models to unknown when logging out
       setAvailableModels(INITIAL_MODELS.map(m => ({ ...m, status: 'unknown' })));
     } catch (err) {
@@ -575,9 +597,16 @@ const App: React.FC = () => {
         }
         return m;
       });
+      
+      // Persiste no localStorage
+      if (user) {
+        const storageKey = `sg_credits_${user.email || 'guest'}`;
+        localStorage.setItem(storageKey, JSON.stringify(updated.map(m => ({ id: m.id, credits: m.credits }))));
+      }
+      
       return [...updated].sort((a, b) => b.credits - a.credits);
     });
-  }, []);
+  }, [user]);
 
   const updateModelStatus = useCallback((modelId: AIModelId, status: AIModelStatus) => {
     setAvailableModels(prev => prev.map(m => m.id === modelId ? { ...m, status } : m));
@@ -678,6 +707,16 @@ const App: React.FC = () => {
 
   const processLaudoFiles = async (files: File[]) => {
     if (files.length === 0) return;
+    
+    // Verifica se há chave Gemini antes de processar
+    const hasKey = await checkGeminiKey();
+    if (!hasKey && !process.env.GEMINI_API_KEY && !process.env.API_KEY) {
+      alert("⚠️ Chave Gemini não detectada! Por favor, acesse as Configurações > Acesso e vincule sua chave de faturamento para processar os laudos.");
+      setIsSettingsOpen(true);
+      setActiveTab('acesso');
+      return;
+    }
+
     setCurrentStep(3);
     
     const customPrompts: Record<string, string> = {};
@@ -759,17 +798,10 @@ const App: React.FC = () => {
         }));
 
       } catch (err: any) {
+        console.error("Erro no processamento do laudo:", err);
         handleError(err, selectedModel);
-        const errorMsg = err.message || "Erro de Análise";
-        setLaudoProgress(p => ({ 
-          ...p, 
-          [file.name]: { 
-            name: file.name, 
-            status: 'error', 
-            progress: 0, 
-            info: errorMsg.includes("quota") ? "Sem créditos" : errorMsg 
-          } 
-        }));
+        const errorMsg = err?.message || 'Erro de Análise';
+        setLaudoProgress(p => ({ ...p, [file.name]: { name: file.name, status: 'error', progress: 0, info: errorMsg } }));
       }
     }));
   };
@@ -790,6 +822,16 @@ const App: React.FC = () => {
 
   const processOSFiles = async (files: File[]) => {
     if (files.length === 0) return;
+    
+    // Verifica se há chave Gemini antes de processar
+    const hasKey = await checkGeminiKey();
+    if (!hasKey && !process.env.GEMINI_API_KEY && !process.env.API_KEY) {
+      alert("⚠️ Chave Gemini não detectada! Por favor, acesse as Configurações > Acesso e vincule sua chave de faturamento para processar a Ordem de Serviço.");
+      setIsSettingsOpen(true);
+      setActiveTab('acesso');
+      return;
+    }
+
     setCurrentStep(4);
     await Promise.all(files.map(async (file) => {
       const currentModelData = availableModels.find(m => m.id === selectedModel);
@@ -844,18 +886,16 @@ const App: React.FC = () => {
 
     try {
         setIsGenerating(true);
-        const safeFileName = outputFileName.replace(/[/\\?%*:|"<>]/g, '-');
         await generateNoticeDocument(
           noticeFile, 
           validatedLaudos, 
           docFields, 
           exportFormat, 
-          safeFileName,
+          outputFileName,
           settings.tableRules
         );
-    } catch (error: any) {
+    } catch (error) {
         console.error("Erro na interface de geração:", error);
-        alert(`Erro ao gerar documento: ${error.message || "Erro desconhecido"}`);
     } finally {
         setIsGenerating(false);
     }
@@ -1636,6 +1676,15 @@ const App: React.FC = () => {
         </div>
       )}
 
+      {/* Global API Key Warning */}
+      {!hasGeminiKey && !isCheckingModels && (
+        <div className="bg-orange-600 text-white px-4 py-2 text-center text-[10px] font-black uppercase tracking-widest animate-pulse flex items-center justify-center gap-3">
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
+          Chave Gemini não vinculada. O processamento de IA poderá falhar.
+          <button onClick={() => { setIsSettingsOpen(true); setActiveTab('acesso'); }} className="ml-4 bg-white text-orange-600 px-3 py-1 rounded-full hover:bg-orange-50 transition-all">Vincular Agora</button>
+        </div>
+      )}
+
       <header className="fixed top-0 left-0 w-full z-[80] bg-white border-b border-slate-200 shadow-md">
         <div className="max-w-[1800px] mx-auto px-4 sm:px-8 py-3 flex flex-col sm:flex-row items-center justify-between gap-4">
           <div className="flex items-center gap-3 w-full sm:w-auto">
@@ -1822,9 +1871,8 @@ const App: React.FC = () => {
                   <div className="flex flex-col gap-2">
                     <button 
                       onClick={onGenerate} 
-                      disabled={isGenerating} 
-                      className={`flex-1 md:flex-none bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white px-8 py-4 rounded-2xl font-black text-[10px] uppercase shadow-xl transition-all min-w-[200px] ${(!laudos.some(l => l.isValidated) || !noticeFile) ? 'opacity-70 grayscale-[0.5]' : ''}`}
-                      title={!noticeFile ? "Selecione o edital base" : (!laudos.some(l => l.isValidated) ? "Nenhum veículo validado" : "")}
+                      disabled={isGenerating || !laudos.some(l => l.isValidated) || !noticeFile} 
+                      className="flex-1 md:flex-none bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white px-8 py-4 rounded-2xl font-black text-[10px] uppercase shadow-xl transition-all min-w-[200px]"
                     >
                       {isGenerating ? "⏳ Gerando..." : `📥 Gerar Edital ${exportFormat.toUpperCase()}`}
                     </button>
