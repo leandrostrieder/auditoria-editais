@@ -23,8 +23,7 @@ export default defineConfig(({ mode }) => {
         emptyOutDir: true,
       },
       define: {
-        'process.env.API_KEY': JSON.stringify(env.GEMINI_API_KEY || ""),
-        'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY || "")
+        // We remove hardcoded definitions to allow runtime access to process.env if available
       },
       resolve: {
         alias: {

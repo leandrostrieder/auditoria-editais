@@ -545,6 +545,12 @@ const App: React.FC = () => {
       console.error("Error logging out:", err);
     }
   };
+
+  const handleUseInternalAuth = () => {
+    setUser(INTERNAL_USER);
+    setIsDisconnected(false);
+    // checkAllModels será disparado pelo useEffect que observa o 'user'
+  };
   const [editingDocIndex, setEditingDocIndex] = useState<number | null>(null);
   const [importType, setImportType] = useState<string>("Pátios SENAD");
 
@@ -1542,6 +1548,18 @@ const App: React.FC = () => {
                         </svg>
                         <span className="text-[10px] font-black text-slate-600 uppercase group-hover:text-blue-600">{user.isInternal ? 'Entrar com Conta Google' : 'Trocar de Conta Google'}</span>
                       </button>
+
+                      {!user.isInternal && (
+                        <button 
+                          onClick={handleUseInternalAuth}
+                          className="w-full py-4 bg-orange-50 border border-orange-100 rounded-2xl flex items-center justify-center gap-3 group hover:bg-orange-100 hover:border-orange-200 transition-all"
+                        >
+                          <svg className="w-4 h-4 text-orange-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                          </svg>
+                          <span className="text-[10px] font-black text-orange-600 uppercase">Usar Autenticação Padrão (Interna)</span>
+                        </button>
+                      )}
                     </div>
                   ) : (
                     <div className="flex flex-col items-center justify-center py-12 bg-slate-50 rounded-3xl border-2 border-dashed border-slate-200">

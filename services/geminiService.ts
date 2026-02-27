@@ -34,11 +34,23 @@ function getModelConfig(modelId: AIModelId) {
 }
 
 /**
+ * Obtém a chave de API de forma dinâmica para suportar injeção em tempo de execução.
+ */
+function getApiKey(): string {
+  // @ts-ignore - process.env pode ser injetado globalmente no browser pelo AI Studio
+  const key = (typeof process !== 'undefined' && process.env) ? (process.env.GEMINI_API_KEY || process.env.API_KEY) : null;
+  if (key) return key;
+  
+  // Fallback para variáveis do Vite (build time)
+  return (import.meta as any).env?.VITE_GEMINI_API_KEY || "";
+}
+
+/**
  * Verifica se o modelo está respondendo.
  */
 export async function checkModelHealth(modelId: AIModelId): Promise<{ status: 'stable' | 'no-credits' | 'busy' }> {
   try {
-    const apiKey = process.env.GEMINI_API_KEY || process.env.API_KEY;
+    const apiKey = getApiKey();
     if (!apiKey) {
       console.warn(`Health check skipped for ${modelId}: No API Key found.`);
       return { status: 'busy' };
@@ -75,7 +87,7 @@ export async function checkModelHealth(modelId: AIModelId): Promise<{ status: 's
  * Identifica metadados no edital base utilizando IA para substituição cirúrgica.
  */
 export async function identifyTemplateFields(text: string, metaRules: Record<string, any>, modelId: AIModelId, referenceDocs: ReferenceDoc[] = [], userContext?: any): Promise<any> {
-  const apiKey = process.env.GEMINI_API_KEY || process.env.API_KEY;
+  const apiKey = getApiKey();
   if (!apiKey) throw new Error("GEMINI_API_KEY not configured");
   
   const ai = new GoogleGenAI({ apiKey });
@@ -142,7 +154,7 @@ ${rulesDescription}`,
 }
 
 export async function parseLaudoText(text: string, modelId: AIModelId = 'gemini-3-pro-preview', customPrompts?: Record<string, string>, referenceDocs: ReferenceDoc[] = [], userContext?: any): Promise<any> {
-  const apiKey = process.env.GEMINI_API_KEY || process.env.API_KEY;
+  const apiKey = getApiKey();
   if (!apiKey) throw new Error("GEMINI_API_KEY not configured");
 
   const ai = new GoogleGenAI({ apiKey });
@@ -296,7 +308,7 @@ export async function parseLaudoText(text: string, modelId: AIModelId = 'gemini-
 }
 
 export async function parseOSText(text: string, tableRules: Record<string, string>, modelId: AIModelId = 'gemini-3-pro-preview', referenceDocs: ReferenceDoc[] = [], userContext?: any): Promise<{ groups: Array<{ tipo: AuctionCategory; placas: string[]; descriptions: Record<string, string> }> }> {
-  const apiKey = process.env.GEMINI_API_KEY || process.env.API_KEY;
+  const apiKey = getApiKey();
   if (!apiKey) throw new Error("GEMINI_API_KEY not configured");
 
   const ai = new GoogleGenAI({ apiKey });
