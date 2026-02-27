@@ -383,21 +383,22 @@ const App: React.FC = () => {
       const globalProcess = (typeof window !== 'undefined' && (window as any).process) || (typeof process !== 'undefined' ? process : null);
       const envKey = globalProcess?.env?.GEMINI_API_KEY || globalProcess?.env?.API_KEY;
       
-      if (envKey) {
-        setHasGeminiKey(true);
+      if (envKey && envKey.length > 5) {
+        if (!hasGeminiKey) setHasGeminiKey(true);
         return true;
       }
 
       if (window.aistudio && typeof window.aistudio.hasSelectedApiKey === 'function') {
         const hasKey = await window.aistudio.hasSelectedApiKey();
-        setHasGeminiKey(hasKey);
+        if (hasKey !== hasGeminiKey) setHasGeminiKey(hasKey);
         return hasKey;
       }
     } catch (e) {
       console.error("Erro ao verificar chave Gemini:", e);
     }
+    if (hasGeminiKey) setHasGeminiKey(false);
     return false;
-  }, []);
+  }, [hasGeminiKey]);
 
   const handleSelectGeminiKey = async () => {
     try {
@@ -514,20 +515,36 @@ const App: React.FC = () => {
   // Sincroniza modelos sempre que o usuário ou a chave mudar
   useEffect(() => {
     if (user) {
+      console.log(`Syncing models for user: ${user.email}`);
       // Carrega créditos do localStorage se existirem para este usuário
       const storageKey = `sg_credits_${user.email || 'guest'}`;
       const savedCredits = localStorage.getItem(storageKey);
+      
       if (savedCredits) {
         try {
           const parsed = JSON.parse(savedCredits);
-          setAvailableModels(prev => prev.map(m => {
-            const saved = parsed.find((p: any) => p.id === m.id);
-            return saved ? { ...m, credits: saved.credits, status: saved.credits === 0 ? 'no-credits' : m.status } : m;
-          }));
+          setAvailableModels(prev => {
+            const current = prev.length > 0 ? prev : INITIAL_MODELS;
+            return current.map(m => {
+              const saved = parsed.find((p: any) => p.id === m.id);
+              // Se houver saldo salvo, usa ele. Se não, usa o saldo inicial do modelo.
+              return saved ? { 
+                ...m, 
+                credits: saved.credits, 
+                status: saved.credits === 0 ? 'no-credits' : m.status 
+              } : m;
+            });
+          });
         } catch (e) {
           console.error("Erro ao carregar créditos salvos:", e);
+          setAvailableModels(INITIAL_MODELS.map(m => ({ ...m, status: 'unknown' })));
         }
+      } else {
+        // Se não houver créditos salvos para este usuário, reseta para o padrão
+        setAvailableModels(INITIAL_MODELS.map(m => ({ ...m, status: 'unknown' })));
       }
+      
+      // Força uma nova verificação de saúde dos modelos para o novo usuário/contexto
       checkAllModels();
     }
   }, [user, hasGeminiKey, checkAllModels]);
@@ -582,7 +599,8 @@ const App: React.FC = () => {
       await fetch('/api/auth/logout', { method: 'POST' });
       setUser(null);
       setIsDisconnected(true);
-      // Reset models to unknown when logging out
+      setHasGeminiKey(false);
+      // Reset models to initial state
       setAvailableModels(INITIAL_MODELS.map(m => ({ ...m, status: 'unknown' })));
     } catch (err) {
       console.error("Error logging out:", err);
