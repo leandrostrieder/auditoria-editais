@@ -392,10 +392,11 @@ const App: React.FC = () => {
 
   // Verifica se o usuário selecionou uma chave de API no AI Studio ou se há uma manual
   const checkGeminiKey = useCallback(async () => {
-    console.log("Checking Gemini Key...");
+    console.log("Checking Gemini Key... Current manualKey length:", manualKey?.length || 0);
     try {
       // 0. Verifica se há uma chave manual salva
       if (manualKey && manualKey.length > 10) {
+        console.log("Using manual API key");
         setApiKey(manualKey);
         setHasGeminiKey(true);
         return true;
@@ -424,11 +425,7 @@ const App: React.FC = () => {
             setApiKey(serverKey);
             setHasGeminiKey(true);
             return true;
-          } else {
-            console.warn("Server returned empty Gemini Key");
           }
-        } else {
-          console.warn(`Server config request failed: ${res.status}`);
         }
       } catch (e) {
         console.error("Error fetching config from server:", e);
@@ -448,7 +445,7 @@ const App: React.FC = () => {
     console.warn("No Gemini Key detected");
     setHasGeminiKey(false);
     return false;
-  }, []);
+  }, [manualKey]);
 
   const handleSaveManualKey = () => {
     if (manualKey.trim()) {
@@ -491,14 +488,16 @@ const App: React.FC = () => {
     });
     
     try {
-      const results = await Promise.all(INITIAL_MODELS.map(async (model) => {
+      // Execução SEQUENCIAL para evitar 429 (Rate Limit) durante o health check
+      const results = [];
+      for (const model of INITIAL_MODELS) {
         try {
           const health = await checkModelHealth(model.id);
-          return { ...model, status: health.status, lastError: health.error };
+          results.push({ ...model, status: health.status, lastError: health.error });
         } catch (e: any) {
-          return { ...model, status: 'busy' as AIModelStatus, lastError: e?.message };
+          results.push({ ...model, status: 'busy' as AIModelStatus, lastError: e?.message });
         }
-      }));
+      }
       
       setAvailableModels(prev => {
         const updated = prev.map(m => {
@@ -521,7 +520,7 @@ const App: React.FC = () => {
       // Tenta manter o modelo selecionado ou escolhe o melhor disponível
       setAvailableModels(prev => {
         const currentSelected = prev.find(m => m.id === selectedModel);
-        if (!currentSelected || currentSelected.status !== 'stable') {
+        if (!currentSelected || (currentSelected.status !== 'stable' && currentSelected.status !== 'busy')) {
           const bestModel = prev.find(m => m.status === 'stable' && m.credits > 0);
           if (bestModel) setSelectedModel(bestModel.id);
         }
@@ -893,12 +892,6 @@ const App: React.FC = () => {
     const allRefDocs = [...settings.referenceDocs, ...osDocs];
 
     await Promise.all(files.map(async (file) => {
-      const currentModelData = availableModels.find(m => m.id === selectedModel);
-      // Permitimos processar se o status for 'unknown' ou 'busy', bloqueamos apenas se for 'no-credits'
-      if (currentModelData && currentModelData.status === 'no-credits') {
-        console.warn(`Model ${selectedModel} blocked due to no-credits status`);
-        return;
-      }
       setLaudoProgress(p => ({ ...p, [file.name]: { name: file.name, progress: 10, status: 'loading' } }));
       try {
         const text = await fileToText(file);
@@ -994,8 +987,6 @@ const App: React.FC = () => {
 
     setCurrentStep(4);
     await Promise.all(files.map(async (file) => {
-      const currentModelData = availableModels.find(m => m.id === selectedModel);
-      if (currentModelData && currentModelData.status === 'no-credits') return;
       setOsProgress(p => ({ ...p, [file.name]: { name: file.name, progress: 10, status: 'loading' } }));
       try {
         const text = await fileToText(file);
