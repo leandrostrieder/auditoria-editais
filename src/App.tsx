@@ -25,7 +25,7 @@ import {
   generateNoticeDocument,
   scanTemplateFields
 } from './utils/helpers';
-import { parseLaudoText, parseOSText, checkModelHealth } from './services/geminiService';
+import { parseLaudoText, parseOSText, checkModelHealth, setApiKey } from './services/geminiService';
 
 declare global {
   interface Window {
@@ -377,28 +377,56 @@ const App: React.FC = () => {
 
   // Verifica se o usuário selecionou uma chave de API no AI Studio
   const checkGeminiKey = useCallback(async () => {
+    console.log("Checking Gemini Key...");
     try {
-      // Verifica primeiro se a chave está injetada no ambiente (process.env ou window.process.env)
+      // 1. Verifica se a chave está injetada no ambiente (process.env ou window.process.env)
       // @ts-ignore
       const globalProcess = (typeof window !== 'undefined' && (window as any).process) || (typeof process !== 'undefined' ? process : null);
-      const envKey = globalProcess?.env?.GEMINI_API_KEY || globalProcess?.env?.API_KEY;
+      let envKey = globalProcess?.env?.GEMINI_API_KEY || globalProcess?.env?.API_KEY;
       
       if (envKey && envKey.length > 5) {
-        if (!hasGeminiKey) setHasGeminiKey(true);
+        console.log("Gemini Key found in environment");
+        setApiKey(envKey);
+        setHasGeminiKey(true);
         return true;
       }
 
+      // 2. Tenta buscar do servidor (útil para full-stack onde a chave está no backend)
+      try {
+        const res = await fetch('/api/config');
+        if (res.ok) {
+          const config = await res.json();
+          const serverKey = config.GEMINI_API_KEY || config.API_KEY;
+          if (serverKey && serverKey.length > 5) {
+            console.log("Gemini Key found on server");
+            setApiKey(serverKey);
+            setHasGeminiKey(true);
+            return true;
+          } else {
+            console.warn("Server returned empty Gemini Key");
+          }
+        } else {
+          console.warn(`Server config request failed: ${res.status}`);
+        }
+      } catch (e) {
+        console.error("Error fetching config from server:", e);
+      }
+
+      // 3. Verifica via API do AI Studio (seletor de chave)
       if (window.aistudio && typeof window.aistudio.hasSelectedApiKey === 'function') {
         const hasKey = await window.aistudio.hasSelectedApiKey();
-        if (hasKey !== hasGeminiKey) setHasGeminiKey(hasKey);
+        console.log("AI Studio Key selection status:", hasKey);
+        setHasGeminiKey(hasKey);
         return hasKey;
       }
     } catch (e) {
       console.error("Erro ao verificar chave Gemini:", e);
     }
-    if (hasGeminiKey) setHasGeminiKey(false);
+    
+    console.warn("No Gemini Key detected");
+    setHasGeminiKey(false);
     return false;
-  }, [hasGeminiKey]);
+  }, []);
 
   const handleSelectGeminiKey = async () => {
     try {
@@ -463,20 +491,41 @@ const App: React.FC = () => {
     // Busca usuário inicial
     fetch('/api/auth/me')
       .then(res => res.json())
-      .then(data => {
+      .then(async data => {
         if (data.user) {
           setUser(data.user);
           setIsDisconnected(false);
         } else if (!isDisconnected) {
-          // Se não houver usuário logado e não foi desconectado manualmente, usa a conta interna
-          setUser(INTERNAL_USER);
+          // Se não houver usuário logado e não foi desconectado manualmente, 
+          // tenta estabelecer sessão interna no servidor para liberar a chave Gemini
+          try {
+            const internalRes = await fetch('/api/auth/internal', { method: 'POST' });
+            if (internalRes.ok) {
+              const internalData = await internalRes.json();
+              setUser(internalData.user);
+            } else {
+              setUser(INTERNAL_USER);
+            }
+          } catch (e) {
+            setUser(INTERNAL_USER);
+          }
           setIsDisconnected(false);
         }
       })
-      .catch(err => {
+      .catch(async err => {
         console.error("Error fetching user:", err);
         if (!isDisconnected) {
-          setUser(INTERNAL_USER);
+          try {
+            const internalRes = await fetch('/api/auth/internal', { method: 'POST' });
+            if (internalRes.ok) {
+              const internalData = await internalRes.json();
+              setUser(internalData.user);
+            } else {
+              setUser(INTERNAL_USER);
+            }
+          } catch (e) {
+            setUser(INTERNAL_USER);
+          }
           setIsDisconnected(false);
         }
       });
@@ -514,40 +563,44 @@ const App: React.FC = () => {
 
   // Sincroniza modelos sempre que o usuário ou a chave mudar
   useEffect(() => {
-    if (user) {
-      console.log(`Syncing models for user: ${user.email}`);
-      // Carrega créditos do localStorage se existirem para este usuário
-      const storageKey = `sg_credits_${user.email || 'guest'}`;
-      const savedCredits = localStorage.getItem(storageKey);
-      
-      if (savedCredits) {
-        try {
-          const parsed = JSON.parse(savedCredits);
-          setAvailableModels(prev => {
-            const current = prev.length > 0 ? prev : INITIAL_MODELS;
-            return current.map(m => {
-              const saved = parsed.find((p: any) => p.id === m.id);
-              // Se houver saldo salvo, usa ele. Se não, usa o saldo inicial do modelo.
-              return saved ? { 
-                ...m, 
-                credits: saved.credits, 
-                status: saved.credits === 0 ? 'no-credits' : m.status 
-              } : m;
+    const sync = async () => {
+      if (user) {
+        console.log(`Syncing models for user: ${user.email}`);
+        
+        // Garante que a chave seja verificada/buscada do servidor para o novo usuário
+        await checkGeminiKey();
+
+        // Carrega créditos do localStorage se existirem para este usuário
+        const storageKey = `sg_credits_${user.email || 'guest'}`;
+        const savedCredits = localStorage.getItem(storageKey);
+        
+        if (savedCredits) {
+          try {
+            const parsed = JSON.parse(savedCredits);
+            setAvailableModels(prev => {
+              const current = prev.length > 0 ? prev : INITIAL_MODELS;
+              return current.map(m => {
+                const saved = parsed.find((p: any) => p.id === m.id);
+                return saved ? { 
+                  ...m, 
+                  credits: saved.credits, 
+                  status: saved.credits === 0 ? 'no-credits' : m.status 
+                } : m;
+              });
             });
-          });
-        } catch (e) {
-          console.error("Erro ao carregar créditos salvos:", e);
+          } catch (e) {
+            console.error("Erro ao carregar créditos salvos:", e);
+            setAvailableModels(INITIAL_MODELS.map(m => ({ ...m, status: 'unknown' })));
+          }
+        } else {
           setAvailableModels(INITIAL_MODELS.map(m => ({ ...m, status: 'unknown' })));
         }
-      } else {
-        // Se não houver créditos salvos para este usuário, reseta para o padrão
-        setAvailableModels(INITIAL_MODELS.map(m => ({ ...m, status: 'unknown' })));
+        
+        checkAllModels();
       }
-      
-      // Força uma nova verificação de saúde dos modelos para o novo usuário/contexto
-      checkAllModels();
-    }
-  }, [user, hasGeminiKey, checkAllModels]);
+    };
+    sync();
+  }, [user, hasGeminiKey, checkAllModels, checkGeminiKey]);
 
   const handleGoogleLogin = async (forceSelect = false) => {
     // Abre o popup imediatamente para manter o contexto de ação do usuário e evitar bloqueios
@@ -607,10 +660,22 @@ const App: React.FC = () => {
     }
   };
 
-  const handleUseInternalAuth = () => {
-    setUser(INTERNAL_USER);
-    setIsDisconnected(false);
-    // checkAllModels será disparado pelo useEffect que observa o 'user'
+  const handleUseInternalAuth = async () => {
+    try {
+      const res = await fetch('/api/auth/internal', { method: 'POST' });
+      if (res.ok) {
+        const data = await res.json();
+        setUser(data.user);
+        setIsDisconnected(false);
+      } else {
+        // Fallback para modo offline se o servidor falhar
+        setUser(INTERNAL_USER);
+        setIsDisconnected(false);
+      }
+    } catch (e) {
+      setUser(INTERNAL_USER);
+      setIsDisconnected(false);
+    }
   };
   const [editingDocIndex, setEditingDocIndex] = useState<number | null>(null);
   const [importType, setImportType] = useState<string>("Pátios SENAD");
@@ -1997,7 +2062,7 @@ const App: React.FC = () => {
           </div>
         )}
       </main>
-      <footer className="py-12 text-center border-t border-slate-200 mt-auto"><p className="text-[9px] font-black text-slate-400 uppercase tracking-[0.4em] opacity-50">SmartGen Auditor Judicial — Enterprise Integrity v3.2.0</p></footer>
+      <footer className="py-12 text-center border-t border-slate-200 mt-auto"><p className="text-[9px] font-black text-slate-400 uppercase tracking-[0.4em] opacity-50">SmartGen Auditor Judicial — Enterprise Integrity v3.2.1</p></footer>
     </div>
   );
 };

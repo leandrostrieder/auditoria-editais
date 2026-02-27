@@ -125,10 +125,13 @@ async function startServer() {
 
   app.get("/api/config", (req, res) => {
     // Só envia a chave se houver um usuário autenticado (segurança básica)
+    const key = process.env.GEMINI_API_KEY || process.env.API_KEY || "";
+    console.log(`Config requested. User: ${req.session?.user?.email}. Key found: ${key ? 'YES (starts with ' + key.substring(0, 4) + ')' : 'NO'}`);
+    
     if (req.session?.user) {
       res.json({ 
-        GEMINI_API_KEY: process.env.GEMINI_API_KEY || process.env.API_KEY || "",
-        API_KEY: process.env.API_KEY || process.env.GEMINI_API_KEY || ""
+        GEMINI_API_KEY: key,
+        API_KEY: key
       });
     } else {
       res.status(401).json({ error: "Não autenticado" });

@@ -33,10 +33,18 @@ function getModelConfig(modelId: AIModelId) {
   return config;
 }
 
+let manualApiKey: string | null = null;
+
+export function setApiKey(key: string) {
+  manualApiKey = key;
+}
+
 /**
  * Obtém a chave de API de forma dinâmica para suportar injeção em tempo de execução.
  */
 function getApiKey(): string {
+  if (manualApiKey) return manualApiKey;
+
   // @ts-ignore - process.env pode ser injetado globalmente no browser pelo AI Studio
   let key = null;
   try {
