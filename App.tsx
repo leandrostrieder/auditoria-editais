@@ -44,6 +44,14 @@ const INITIAL_MODELS: AIModelConfig[] = [
   { id: 'gemini-flash-lite-latest', name: 'Gemini Flash Lite', description: 'Alta Disponibilidade', tier: 'Low', status: 'unknown', credits: 500, maxCredits: 500 },
 ];
 
+const INTERNAL_USER = {
+  id: 'internal',
+  name: 'Auditoria (Conta Interna)',
+  email: 'sistema@auditoria.internal',
+  picture: null,
+  isInternal: true
+};
+
 const createInstructionRule = (prompt: string): ColumnRule => ({
   mode: 'instrucao',
   fixedValue: "",
@@ -435,9 +443,19 @@ const App: React.FC = () => {
         if (data.user) {
           setUser(data.user);
           setIsDisconnected(false);
+        } else if (!isDisconnected) {
+          // Se não houver usuário logado e não foi desconectado manualmente, usa a conta interna
+          setUser(INTERNAL_USER);
+          setIsDisconnected(false);
         }
       })
-      .catch(err => console.error("Error fetching user:", err));
+      .catch(err => {
+        console.error("Error fetching user:", err);
+        if (!isDisconnected) {
+          setUser(INTERNAL_USER);
+          setIsDisconnected(false);
+        }
+      });
 
     // Verifica chave Gemini inicial
     checkGeminiKey();
@@ -454,8 +472,6 @@ const App: React.FC = () => {
                 setUser(data.user);
                 setIsDisconnected(false);
                 console.log("User authenticated successfully:", data.user.name);
-                // Forçamos a re-verificação dos modelos imediatamente após o login
-                checkAllModels();
               }
             })
             .catch(err => console.error("Error fetching user after OAuth:", err));
@@ -464,7 +480,14 @@ const App: React.FC = () => {
     };
     window.addEventListener('message', handleMessage);
     return () => window.removeEventListener('message', handleMessage);
-  }, [checkAllModels, checkGeminiKey]);
+  }, [checkGeminiKey, isDisconnected]);
+
+  // Sincroniza modelos sempre que o usuário mudar
+  useEffect(() => {
+    if (user) {
+      checkAllModels();
+    }
+  }, [user, checkAllModels]);
 
   const handleGoogleLogin = async (forceSelect = false) => {
     // Abre o popup imediatamente para manter o contexto de ação do usuário e evitar bloqueios
@@ -516,6 +539,8 @@ const App: React.FC = () => {
       await fetch('/api/auth/logout', { method: 'POST' });
       setUser(null);
       setIsDisconnected(true);
+      // Reset models to unknown when logging out
+      setAvailableModels(INITIAL_MODELS.map(m => ({ ...m, status: 'unknown' })));
     } catch (err) {
       console.error("Error logging out:", err);
     }
@@ -1465,17 +1490,17 @@ const App: React.FC = () => {
 
                   {user ? (
                     <div className="space-y-4">
-                      <div className="bg-white border border-slate-200 rounded-3xl p-6 shadow-sm flex items-center justify-between">
+                      <div className={`border rounded-3xl p-6 shadow-sm flex items-center justify-between ${user.isInternal ? 'bg-orange-50 border-orange-100' : 'bg-white border-slate-200'}`}>
                         <div className="flex items-center gap-4">
                           {user.picture ? (
-                            <img src={user.picture} alt={user.name} className="w-12 h-12 rounded-full border-2 border-emerald-500" referrerPolicy="no-referrer" />
+                            <img src={user.picture} alt={user.name} className={`w-12 h-12 rounded-full border-2 ${user.isInternal ? 'border-orange-400' : 'border-emerald-500'}`} referrerPolicy="no-referrer" />
                           ) : (
-                            <div className="w-12 h-12 rounded-full bg-emerald-600 flex items-center justify-center text-white font-black text-lg">
+                            <div className={`w-12 h-12 rounded-full flex items-center justify-center text-white font-black text-lg ${user.isInternal ? 'bg-orange-600' : 'bg-emerald-600'}`}>
                               {user.name?.charAt(0)}
                             </div>
                           )}
                           <div>
-                            <p className="text-xs font-black text-slate-900 uppercase">Conta em Uso</p>
+                            <p className="text-xs font-black text-slate-900 uppercase">{user.isInternal ? 'Conexão Automática' : 'Conta em Uso'}</p>
                             <p className="text-[10px] font-bold text-slate-700">{user.name}</p>
                             <p className="text-[9px] font-medium text-slate-400">{user.email}</p>
                           </div>
@@ -1515,7 +1540,7 @@ const App: React.FC = () => {
                         <svg className="w-4 h-4 text-slate-400 group-hover:text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
                         </svg>
-                        <span className="text-[10px] font-black text-slate-600 uppercase group-hover:text-blue-600">Trocar de Conta Google</span>
+                        <span className="text-[10px] font-black text-slate-600 uppercase group-hover:text-blue-600">{user.isInternal ? 'Entrar com Conta Google' : 'Trocar de Conta Google'}</span>
                       </button>
                     </div>
                   ) : (
@@ -1585,7 +1610,11 @@ const App: React.FC = () => {
           <div className="flex items-center gap-3 w-full sm:w-auto">
             <button 
               onClick={() => { setTempSettings(settings); setIsSettingsOpen(true); }}
-              className={`w-9 h-9 sm:w-10 sm:h-10 rounded-xl flex items-center justify-center text-white font-black text-base shadow-lg shrink-0 transition-all active:scale-95 border-2 ${user && hasGeminiKey ? 'bg-emerald-600 border-emerald-400' : 'bg-blue-600 border-red-500'}`}
+              className={`w-9 h-9 sm:w-10 sm:h-10 rounded-xl flex items-center justify-center text-white font-black text-base shadow-lg shrink-0 transition-all active:scale-95 border-2 ${
+                isDisconnected ? 'bg-blue-600 border-red-500' : 
+                (user?.isInternal ? 'bg-orange-600 border-orange-400' : 
+                (user ? 'bg-emerald-600 border-emerald-400' : 'bg-blue-600 border-red-500'))
+              }`}
             >
               SG
             </button>

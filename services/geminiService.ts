@@ -39,8 +39,12 @@ function getModelConfig(modelId: AIModelId) {
 export async function checkModelHealth(modelId: AIModelId): Promise<{ status: 'stable' | 'no-credits' | 'busy' }> {
   try {
     const apiKey = process.env.GEMINI_API_KEY || process.env.API_KEY;
-    if (!apiKey) return { status: 'busy' };
+    if (!apiKey) {
+      console.warn(`Health check skipped for ${modelId}: No API Key found.`);
+      return { status: 'busy' };
+    }
     
+    console.log(`Checking health for ${modelId} using key: ${apiKey.substring(0, 4)}...${apiKey.substring(apiKey.length - 4)}`);
     const ai = new GoogleGenAI({ apiKey });
     
     // Simplificamos a chamada de saúde para evitar erros de configuração de thinking
@@ -71,7 +75,7 @@ export async function checkModelHealth(modelId: AIModelId): Promise<{ status: 's
  * Identifica metadados no edital base utilizando IA para substituição cirúrgica.
  */
 export async function identifyTemplateFields(text: string, metaRules: Record<string, any>, modelId: AIModelId, referenceDocs: ReferenceDoc[] = [], userContext?: any): Promise<any> {
-  const apiKey = process.env.GEMINI_API_KEY;
+  const apiKey = process.env.GEMINI_API_KEY || process.env.API_KEY;
   if (!apiKey) throw new Error("GEMINI_API_KEY not configured");
   
   const ai = new GoogleGenAI({ apiKey });
@@ -138,7 +142,7 @@ ${rulesDescription}`,
 }
 
 export async function parseLaudoText(text: string, modelId: AIModelId = 'gemini-3-pro-preview', customPrompts?: Record<string, string>, referenceDocs: ReferenceDoc[] = [], userContext?: any): Promise<any> {
-  const apiKey = process.env.GEMINI_API_KEY;
+  const apiKey = process.env.GEMINI_API_KEY || process.env.API_KEY;
   if (!apiKey) throw new Error("GEMINI_API_KEY not configured");
 
   const ai = new GoogleGenAI({ apiKey });
@@ -292,7 +296,7 @@ export async function parseLaudoText(text: string, modelId: AIModelId = 'gemini-
 }
 
 export async function parseOSText(text: string, tableRules: Record<string, string>, modelId: AIModelId = 'gemini-3-pro-preview', referenceDocs: ReferenceDoc[] = [], userContext?: any): Promise<{ groups: Array<{ tipo: AuctionCategory; placas: string[]; descriptions: Record<string, string> }> }> {
-  const apiKey = process.env.GEMINI_API_KEY;
+  const apiKey = process.env.GEMINI_API_KEY || process.env.API_KEY;
   if (!apiKey) throw new Error("GEMINI_API_KEY not configured");
 
   const ai = new GoogleGenAI({ apiKey });
