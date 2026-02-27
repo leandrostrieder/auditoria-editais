@@ -579,9 +579,6 @@ const App: React.FC = () => {
     // Verifica chave Gemini inicial
     checkGeminiKey();
 
-    // Verifica periodicamente se a chave foi injetada (útil para ambientes de preview)
-    const keyCheckInterval = setInterval(checkGeminiKey, 5000);
-
     const handleMessage = (event: MessageEvent) => {
       if (event.data?.type === 'OAUTH_AUTH_SUCCESS') {
         console.log("OAuth success message received, fetching user data...");
@@ -603,7 +600,6 @@ const App: React.FC = () => {
     window.addEventListener('message', handleMessage);
     return () => {
       window.removeEventListener('message', handleMessage);
-      clearInterval(keyCheckInterval);
     };
   }, [checkGeminiKey, isDisconnected]);
 
@@ -630,7 +626,7 @@ const App: React.FC = () => {
                 return saved ? { 
                   ...m, 
                   credits: saved.credits, 
-                  status: saved.credits === 0 ? 'no-credits' : m.status 
+                  status: saved.credits === 0 ? 'no-credits' : (m.status === 'unknown' ? 'unknown' : m.status)
                 } : m;
               });
             });
@@ -641,12 +637,10 @@ const App: React.FC = () => {
         } else {
           setAvailableModels(INITIAL_MODELS.map(m => ({ ...m, status: 'unknown' })));
         }
-        
-        checkAllModels();
       }
     };
     sync();
-  }, [user, hasGeminiKey, checkAllModels, checkGeminiKey]);
+  }, [user, hasGeminiKey, checkGeminiKey]);
 
   const handleGoogleLogin = async (forceSelect = false) => {
     // Abre o popup imediatamente para manter o contexto de ação do usuário e evitar bloqueios
@@ -850,7 +844,9 @@ const App: React.FC = () => {
 
     if (errorMsg.includes("429") || errorMsg.includes("QUOTA") || errorMsg.includes("CREDITS") || errorMsg.includes("LIMIT")) {
       status = 'no-credits';
-      lastError = "Cota de API excedida.";
+      const retryMatch = errorMsg.match(/RETRY IN ([\d.]+)S/);
+      const retryDelay = retryMatch ? ` Tente novamente em ${retryMatch[1]}s.` : "";
+      lastError = `Cota de API excedida (Limite do Plano Gratuito).${retryDelay}`;
       setAvailableModels(prev => prev.map(m => m.id === modelId ? { ...m, credits: 0, status: 'no-credits', lastError } : m));
     } else if (errorMsg.includes("401") || errorMsg.includes("403") || errorMsg.includes("API_KEY_INVALID") || errorMsg.includes("PERMISSION_DENIED")) {
       status = 'invalid-key';
@@ -1767,8 +1763,16 @@ const App: React.FC = () => {
                               </button>
                             </div>
                           </div>
+                          <div className="p-3 bg-orange-50 rounded-xl border border-orange-100">
+                            <p className="text-[8px] font-black text-orange-800 uppercase mb-1">Aviso de Cota (Free Tier):</p>
+                            <p className="text-[7px] text-orange-700 leading-relaxed">
+                              O Google limita contas gratuitas a <strong>20 requisições por dia</strong> em alguns modelos (como o Flash Lite). 
+                              Se você atingir esse limite, o sistema mostrará "SEM CRÉDITOS" até que a cota seja renovada pelo Google. 
+                              Considere usar uma chave com faturamento ativado para limites maiores.
+                            </p>
+                          </div>
                           <p className="text-[7px] text-slate-400 font-medium leading-relaxed">
-                            Se o sistema não detectar créditos automaticamente, insira sua chave pessoal acima. Obtenha uma chave gratuita em <a href="https://aistudio.google.com/app/apikey" target="_blank" className="text-blue-500 underline">Google AI Studio</a>.
+                            Obtenha uma chave gratuita em <a href="https://aistudio.google.com/app/apikey" target="_blank" className="text-blue-500 underline">Google AI Studio</a>.
                           </p>
                         </div>
 
@@ -1895,19 +1899,31 @@ const App: React.FC = () => {
           </div>
           <div className="flex flex-col sm:flex-row items-center gap-4 sm:gap-8 w-full sm:w-auto">
             {currentModel && <CreditMeter model={currentModel} hasKey={hasGeminiKey} />}
-            <select value={selectedModel} onChange={(e) => setSelectedModel(e.target.value as AIModelId)} className="bg-white border border-slate-200 rounded-xl px-3 py-1.5 text-[10px] font-black outline-none shadow-sm cursor-pointer">
-              {availableModels
-                .map((m: AIModelConfig) => {
-                  const perc = (m.credits / m.maxCredits) * 100;
-                  const icon = m.status === 'no-credits' || m.credits === 0 ? '🔴' : (perc < 30 ? '🟠' : '🟢');
-                  const statusText = m.status === 'stable' ? 'DISPONÍVEL' : (m.status === 'no-credits' ? 'SEM SALDO' : (m.status === 'busy' ? 'OCUPADO' : 'VERIFICANDO'));
-                  return (
-                    <option key={m.id} value={m.id}>
-                      {icon} {m.name} — {m.credits} UN ({statusText})
-                    </option>
-                  );
-                })}
-            </select>
+            <div className="flex items-center gap-2">
+              <select value={selectedModel} onChange={(e) => setSelectedModel(e.target.value as AIModelId)} className="bg-white border border-slate-200 rounded-xl px-3 py-1.5 text-[10px] font-black outline-none shadow-sm cursor-pointer">
+                {availableModels
+                  .map((m: AIModelConfig) => {
+                    const perc = (m.credits / m.maxCredits) * 100;
+                    const icon = m.status === 'no-credits' || m.credits === 0 ? '🔴' : (perc < 30 ? '🟠' : '🟢');
+                    const statusText = m.status === 'stable' ? 'DISPONÍVEL' : (m.status === 'no-credits' ? 'SEM SALDO' : (m.status === 'busy' ? 'OCUPADO' : (m.status === 'model-not-found' ? 'INDISPONÍVEL' : 'VERIFICAR')));
+                    return (
+                      <option key={m.id} value={m.id}>
+                        {icon} {m.name} — {m.credits} UN ({statusText})
+                      </option>
+                    );
+                  })}
+              </select>
+              <button 
+                onClick={checkAllModels} 
+                disabled={isCheckingModels}
+                className="p-2 bg-slate-100 text-slate-500 rounded-xl hover:bg-blue-50 hover:text-blue-600 transition-all shadow-sm disabled:opacity-50"
+                title="Sincronizar Créditos Reais"
+              >
+                <svg className={`w-3.5 h-3.5 ${isCheckingModels ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                </svg>
+              </button>
+            </div>
             <button onClick={() => window.location.reload()} className="px-4 py-2 bg-slate-100 text-slate-500 border border-slate-200 rounded-xl text-[9px] font-black uppercase hover:bg-red-50 hover:text-red-600 transition-all">Reiniciar</button>
           </div>
         </div>
