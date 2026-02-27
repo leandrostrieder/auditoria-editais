@@ -27,6 +27,15 @@ import {
 } from './utils/helpers';
 import { parseLaudoText, parseOSText, checkModelHealth } from './services/geminiService';
 
+declare global {
+  interface Window {
+    aistudio: {
+      hasSelectedApiKey: () => Promise<boolean>;
+      openSelectKey: () => Promise<void>;
+    };
+  }
+}
+
 const INITIAL_MODELS: AIModelConfig[] = [
   { id: 'gemini-3-pro-preview', name: 'Gemini 3 Pro', description: 'Alta Precisão', tier: 'High', status: 'unknown', credits: 50, maxCredits: 50 },
   { id: 'gemini-3-flash-preview', name: 'Gemini 3 Flash', description: 'Alta Velocidade', tier: 'Medium', status: 'unknown', credits: 100, maxCredits: 100 },
@@ -353,6 +362,34 @@ const App: React.FC = () => {
   const [user, setUser] = useState<any>(null);
   const [isDisconnected, setIsDisconnected] = useState(false);
   const [isCheckingModels, setIsCheckingModels] = useState(false);
+  const [hasGeminiKey, setHasGeminiKey] = useState(false);
+
+  // Verifica se o usuário selecionou uma chave de API no AI Studio
+  const checkGeminiKey = useCallback(async () => {
+    try {
+      if (window.aistudio && typeof window.aistudio.hasSelectedApiKey === 'function') {
+        const hasKey = await window.aistudio.hasSelectedApiKey();
+        setHasGeminiKey(hasKey);
+        return hasKey;
+      }
+    } catch (e) {
+      console.error("Erro ao verificar chave Gemini:", e);
+    }
+    return false;
+  }, []);
+
+  const handleSelectGeminiKey = async () => {
+    try {
+      if (window.aistudio && typeof window.aistudio.openSelectKey === 'function') {
+        await window.aistudio.openSelectKey();
+        // Após abrir o seletor, assumimos sucesso e re-verificamos
+        setHasGeminiKey(true);
+        checkAllModels();
+      }
+    } catch (e) {
+      console.error("Erro ao abrir seletor de chave:", e);
+    }
+  };
 
   const checkAllModels = useCallback(async () => {
     // Usamos um sinalizador simples para evitar múltiplas verificações simultâneas
@@ -360,6 +397,9 @@ const App: React.FC = () => {
     
     // Reset imediato para estado de "Verificando" e restauração de créditos (mock)
     setAvailableModels(INITIAL_MODELS.map(m => ({ ...m, status: 'unknown' })));
+    
+    // Verifica a chave antes de testar os modelos
+    await checkGeminiKey();
     
     try {
       const results = await Promise.all(INITIAL_MODELS.map(async (model) => {
@@ -385,7 +425,7 @@ const App: React.FC = () => {
     } finally {
       setIsCheckingModels(false);
     }
-  }, [selectedModel]);
+  }, [selectedModel, checkGeminiKey]);
 
   useEffect(() => {
     // Busca usuário inicial
@@ -398,6 +438,9 @@ const App: React.FC = () => {
         }
       })
       .catch(err => console.error("Error fetching user:", err));
+
+    // Verifica chave Gemini inicial
+    checkGeminiKey();
 
     const handleMessage = (event: MessageEvent) => {
       if (event.data?.type === 'OAUTH_AUTH_SUCCESS') {
@@ -421,7 +464,7 @@ const App: React.FC = () => {
     };
     window.addEventListener('message', handleMessage);
     return () => window.removeEventListener('message', handleMessage);
-  }, [checkAllModels]);
+  }, [checkAllModels, checkGeminiKey]);
 
   const handleGoogleLogin = async (forceSelect = false) => {
     // Abre o popup imediatamente para manter o contexto de ação do usuário e evitar bloqueios
@@ -1444,6 +1487,26 @@ const App: React.FC = () => {
                           Sair
                         </button>
                       </div>
+
+                      <div className="bg-emerald-50 border border-emerald-100 rounded-3xl p-6 flex items-center justify-between">
+                        <div className="flex items-center gap-4">
+                          <div className={`w-12 h-12 rounded-2xl flex items-center justify-center text-white font-black text-xs ${hasGeminiKey ? 'bg-emerald-600' : 'bg-orange-500'}`}>
+                            {hasGeminiKey ? 'API' : '!'}
+                          </div>
+                          <div>
+                            <p className="text-xs font-black text-slate-900 uppercase">Chave Gemini (Faturamento)</p>
+                            <p className="text-[9px] font-medium text-slate-500 uppercase tracking-tight">
+                              {hasGeminiKey ? 'Chave de API Vinculada e Ativa' : 'Necessário vincular chave para créditos'}
+                            </p>
+                          </div>
+                        </div>
+                        <button 
+                          onClick={handleSelectGeminiKey}
+                          className={`px-4 py-2 rounded-xl text-[9px] font-black uppercase transition-all border ${hasGeminiKey ? 'bg-white text-emerald-600 border-emerald-200 hover:bg-emerald-50' : 'bg-orange-600 text-white border-orange-500 hover:bg-orange-700'}`}
+                        >
+                          {hasGeminiKey ? 'Alterar Chave' : 'Vincular Chave'}
+                        </button>
+                      </div>
                       
                       <button 
                         onClick={() => handleGoogleLogin(true)}
@@ -1522,7 +1585,7 @@ const App: React.FC = () => {
           <div className="flex items-center gap-3 w-full sm:w-auto">
             <button 
               onClick={() => { setTempSettings(settings); setIsSettingsOpen(true); }}
-              className={`w-9 h-9 sm:w-10 sm:h-10 rounded-xl flex items-center justify-center text-white font-black text-base shadow-lg shrink-0 transition-all active:scale-95 border-2 ${user ? 'bg-emerald-600 border-emerald-400' : 'bg-blue-600 border-red-500'}`}
+              className={`w-9 h-9 sm:w-10 sm:h-10 rounded-xl flex items-center justify-center text-white font-black text-base shadow-lg shrink-0 transition-all active:scale-95 border-2 ${user && hasGeminiKey ? 'bg-emerald-600 border-emerald-400' : 'bg-blue-600 border-red-500'}`}
             >
               SG
             </button>
