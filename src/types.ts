@@ -7,7 +7,7 @@ export type AIModelId =
   | 'gemini-flash-latest'
   | 'gemini-flash-lite-latest';
 
-export type AIModelStatus = 'stable' | 'busy' | 'no-credits' | 'unknown';
+export type AIModelStatus = 'stable' | 'busy' | 'no-credits' | 'invalid-key' | 'unknown';
 
 export interface AIModelConfig {
   id: AIModelId;

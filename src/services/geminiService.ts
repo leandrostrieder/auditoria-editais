@@ -61,17 +61,16 @@ function getApiKey(): string {
 /**
  * Verifica se o modelo está respondendo.
  */
-export async function checkModelHealth(modelId: AIModelId): Promise<{ status: 'stable' | 'no-credits' | 'busy' }> {
+export async function checkModelHealth(modelId: AIModelId): Promise<{ status: 'stable' | 'no-credits' | 'invalid-key' | 'busy' }> {
   try {
     const apiKey = getApiKey();
     if (!apiKey) {
       console.warn(`Health check skipped for ${modelId}: No API Key found.`);
-      return { status: 'busy' }; // Retornamos busy para indicar que não está pronto
+      return { status: 'invalid-key' };
     }
     
     const ai = new GoogleGenAI({ apiKey });
     
-    // Simplificamos a chamada de saúde para evitar erros de configuração de thinking
     const response = await ai.models.generateContent({
       model: modelId,
       contents: "Responda apenas: OK",
@@ -89,12 +88,11 @@ export async function checkModelHealth(modelId: AIModelId): Promise<{ status: 's
     const msg = String(error?.message || "").toUpperCase();
     console.warn(`Health check failed for ${modelId}:`, msg);
     
-    // Se o erro for de autenticação ou chave não encontrada, tratamos como no-credits
-    if (msg.includes("401") || msg.includes("403") || msg.includes("API_KEY_INVALID") || msg.includes("NOT_FOUND") || msg.includes("PERMISSION_DENIED")) {
-      return { status: 'no-credits' };
+    if (msg.includes("401") || msg.includes("403") || msg.includes("API_KEY_INVALID") || msg.includes("INVALID_ARGUMENT") || msg.includes("PERMISSION_DENIED")) {
+      return { status: 'invalid-key' };
     }
     
-    if (msg.includes("429") || msg.includes("QUOTA") || msg.includes("LIMIT") || msg.includes("CREDIT") || msg.includes("CREDITS")) {
+    if (msg.includes("429") || msg.includes("QUOTA") || msg.includes("LIMIT") || msg.includes("CREDIT") || msg.includes("CREDITS") || msg.includes("NOT_FOUND")) {
       return { status: 'no-credits' };
     }
     return { status: 'busy' };

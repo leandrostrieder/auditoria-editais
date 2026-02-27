@@ -126,7 +126,12 @@ async function startServer() {
   app.get("/api/config", (req, res) => {
     // Só envia a chave se houver um usuário autenticado (segurança básica)
     const key = process.env.GEMINI_API_KEY || process.env.API_KEY || "";
-    console.log(`Config requested. User: ${req.session?.user?.email}. Key found: ${key ? 'YES (starts with ' + key.substring(0, 4) + ')' : 'NO'}`);
+    
+    if (key) {
+      console.log(`[API_CONFIG] Key found for user ${req.session?.user?.email || 'unknown'}. Starts with: ${key.substring(0, 4)}...`);
+    } else {
+      console.warn(`[API_CONFIG] NO KEY FOUND in environment variables (GEMINI_API_KEY or API_KEY)`);
+    }
     
     if (req.session?.user) {
       res.json({ 

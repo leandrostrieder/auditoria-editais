@@ -264,10 +264,10 @@ const CreditMeter: React.FC<{ model: AIModelConfig; hasKey: boolean }> = ({ mode
   let dotColor = "bg-emerald-500";
   let label = "CONFIÁVEL";
   
-  if (!hasKey) {
-    statusColor = "bg-orange-500 shadow-orange-500/50"; textColor = "text-orange-600"; dotColor = "bg-orange-500"; label = "SEM CHAVE";
+  if (!hasKey || model.status === 'invalid-key') {
+    statusColor = "bg-red-500 shadow-red-500/50"; textColor = "text-red-600"; dotColor = "bg-red-500"; label = "CHAVE INVÁLIDA";
   } else if (model.status === 'no-credits' || model.credits === 0) {
-    statusColor = "bg-red-500 shadow-red-500/50"; textColor = "text-red-600"; dotColor = "bg-red-500"; label = "BLOQUEADO";
+    statusColor = "bg-red-500 shadow-red-500/50"; textColor = "text-red-600"; dotColor = "bg-red-500"; label = "SEM CRÉDITOS";
   } else if (model.status === 'busy' || percentage < 30) {
     statusColor = "bg-orange-500 shadow-orange-500/50"; textColor = "text-orange-600"; dotColor = "bg-orange-500"; label = "ATENÇÃO";
   } else if (model.status === 'unknown') {
@@ -802,6 +802,8 @@ const App: React.FC = () => {
     if (errorMsg.includes("429") || errorMsg.includes("QUOTA") || errorMsg.includes("CREDITS") || errorMsg.includes("LIMIT")) {
       updateModelStatus(modelId, 'no-credits');
       setAvailableModels(prev => prev.map(m => m.id === modelId ? { ...m, credits: 0 } : m));
+    } else if (errorMsg.includes("401") || errorMsg.includes("403") || errorMsg.includes("API_KEY_INVALID") || errorMsg.includes("PERMISSION_DENIED")) {
+      updateModelStatus(modelId, 'invalid-key');
     } else {
       updateModelStatus(modelId, 'busy');
     }
@@ -1674,24 +1676,34 @@ const App: React.FC = () => {
                         </button>
                       </div>
 
-                      <div className="bg-emerald-50 border border-emerald-100 rounded-3xl p-6 flex items-center justify-between">
-                        <div className="flex items-center gap-4">
-                          <div className={`w-12 h-12 rounded-2xl flex items-center justify-center text-white font-black text-xs ${hasGeminiKey ? 'bg-emerald-600' : 'bg-orange-500'}`}>
-                            {hasGeminiKey ? 'API' : '!'}
+                      <div className="bg-emerald-50 border border-emerald-100 rounded-3xl p-6 flex flex-col gap-4">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-4">
+                            <div className={`w-12 h-12 rounded-2xl flex items-center justify-center text-white font-black text-xs ${hasGeminiKey ? 'bg-emerald-600' : 'bg-orange-500'}`}>
+                              {hasGeminiKey ? 'API' : '!'}
+                            </div>
+                            <div>
+                              <p className="text-xs font-black text-slate-900 uppercase">Chave Gemini (Faturamento)</p>
+                              <p className="text-[9px] font-medium text-slate-500 uppercase tracking-tight">
+                                {hasGeminiKey ? 'Chave de API Vinculada e Ativa' : 'Necessário vincular chave para créditos'}
+                              </p>
+                            </div>
                           </div>
-                          <div>
-                            <p className="text-xs font-black text-slate-900 uppercase">Chave Gemini (Faturamento)</p>
-                            <p className="text-[9px] font-medium text-slate-500 uppercase tracking-tight">
-                              {hasGeminiKey ? 'Chave de API Vinculada e Ativa' : 'Necessário vincular chave para créditos'}
+                          <button 
+                            onClick={handleSelectGeminiKey}
+                            className={`px-4 py-2 rounded-xl text-[9px] font-black uppercase transition-all border ${hasGeminiKey ? 'bg-white text-emerald-600 border-emerald-200 hover:bg-emerald-50' : 'bg-orange-600 text-white border-orange-500 hover:bg-orange-700'}`}
+                          >
+                            {hasGeminiKey ? 'Alterar Chave' : 'Vincular Chave'}
+                          </button>
+                        </div>
+                        {!hasGeminiKey && (
+                          <div className="p-3 bg-white/50 rounded-xl border border-emerald-100">
+                            <p className="text-[8px] font-bold text-emerald-800 uppercase mb-1">Dica para Ambiente Externo:</p>
+                            <p className="text-[8px] text-emerald-700 leading-relaxed">
+                              Se você estiver acessando fora do AI Studio, certifique-se de configurar a variável de ambiente <code className="bg-emerald-100 px-1 rounded">GEMINI_API_KEY</code> no seu servidor de hospedagem.
                             </p>
                           </div>
-                        </div>
-                        <button 
-                          onClick={handleSelectGeminiKey}
-                          className={`px-4 py-2 rounded-xl text-[9px] font-black uppercase transition-all border ${hasGeminiKey ? 'bg-white text-emerald-600 border-emerald-200 hover:bg-emerald-50' : 'bg-orange-600 text-white border-orange-500 hover:bg-orange-700'}`}
-                        >
-                          {hasGeminiKey ? 'Alterar Chave' : 'Vincular Chave'}
-                        </button>
+                        )}
                       </div>
                       
                       <button 
