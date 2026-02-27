@@ -59,52 +59,6 @@ function getApiKey(): string {
 }
 
 /**
- * Verifica se o modelo está respondendo.
- */
-export async function checkModelHealth(modelId: AIModelId): Promise<{ status: AIModelStatus; error?: string }> {
-  try {
-    const apiKey = getApiKey();
-    if (!apiKey) {
-      console.warn(`Health check skipped for ${modelId}: No API Key found.`);
-      return { status: 'invalid-key', error: "Chave de API não configurada no ambiente." };
-    }
-    
-    const ai = new GoogleGenAI({ apiKey });
-    
-    const response = await ai.models.generateContent({
-      model: modelId,
-      contents: "Responda apenas: OK",
-      config: { 
-        maxOutputTokens: 5,
-        temperature: 0.1
-      }
-    });
-    
-    if (response && response.text) {
-      return { status: 'stable' };
-    }
-    return { status: 'busy', error: "Resposta vazia do modelo." };
-  } catch (error: any) {
-    const msg = String(error?.message || "").toUpperCase();
-    console.warn(`Health check failed for ${modelId}:`, msg);
-    
-    if (msg.includes("429") || msg.includes("RESOURCE_EXHAUSTED") || msg.includes("QUOTA_EXCEEDED")) {
-      return { status: 'no-credits', error: "Cota de API excedida ou sem créditos disponíveis." };
-    }
-
-    if (msg.includes("401") || msg.includes("403") || msg.includes("API_KEY_INVALID") || msg.includes("INVALID_ARGUMENT") || msg.includes("PERMISSION_DENIED")) {
-      return { status: 'invalid-key', error: error?.message || "Erro de autenticação (Chave Inválida)." };
-    }
-
-    if (msg.includes("404") || msg.includes("NOT_FOUND") || msg.includes("MODEL_NOT_FOUND")) {
-      return { status: 'model-not-found', error: "Modelo não disponível para esta chave ou região." };
-    }
-
-    return { status: 'busy', error: error?.message || "Erro desconhecido na verificação de saúde." };
-  }
-}
-
-/**
  * Identifica metadados no edital base utilizando IA para substituição cirúrgica.
  */
 export async function identifyTemplateFields(text: string, metaRules: Record<string, any>, modelId: AIModelId, referenceDocs: ReferenceDoc[] = [], userContext?: any): Promise<any> {

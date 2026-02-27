@@ -25,7 +25,7 @@ import {
   generateNoticeDocument,
   scanTemplateFields
 } from './utils/helpers';
-import { parseLaudoText, parseOSText, checkModelHealth, setApiKey } from './services/geminiService';
+import { parseLaudoText, parseOSText, setApiKey } from './services/geminiService';
 
 declare global {
   interface Window {
@@ -452,7 +452,7 @@ const App: React.FC = () => {
       localStorage.setItem('sg_manual_api_key', manualKey.trim());
       setApiKey(manualKey.trim());
       setHasGeminiKey(true);
-      checkAllModels(selectedModel);
+      checkAllModels();
       alert("Chave de API manual salva com sucesso!");
     } else {
       localStorage.removeItem('sg_manual_api_key');
@@ -468,75 +468,30 @@ const App: React.FC = () => {
         await window.aistudio.openSelectKey();
         // Após abrir o seletor, assumimos sucesso e re-verificamos
         setHasGeminiKey(true);
-        checkAllModels(selectedModel);
+        checkAllModels();
       }
     } catch (e) {
       console.error("Erro ao abrir seletor de chave:", e);
     }
   };
 
-  const checkAllModels = useCallback(async (targetModelId?: AIModelId) => {
+  const checkAllModels = useCallback(async () => {
     setIsCheckingModels(true);
     
     // Verifica a chave antes de testar os modelos
     const hasKey = await checkGeminiKey();
     
-    // Preserva os créditos atuais se existirem, senão usa os iniciais
+    // Apenas atualiza o status baseado na presença da chave
     setAvailableModels(prev => {
       const current = prev.length > 0 ? prev : INITIAL_MODELS;
-      return current.map(m => (!targetModelId || m.id === targetModelId) ? { ...m, status: 'unknown' } : m);
+      return current.map(m => ({ 
+        ...m, 
+        status: hasKey ? (m.status === 'invalid-key' ? 'stable' : m.status) : 'invalid-key' 
+      }));
     });
     
-    try {
-      // Filtra quais modelos verificar para economizar cota (Free Tier)
-      const modelsToCheck = targetModelId 
-        ? INITIAL_MODELS.filter(m => m.id === targetModelId)
-        : INITIAL_MODELS;
-
-      // Execução SEQUENCIAL para evitar 429 (Rate Limit) durante o health check
-      const results = [];
-      for (const model of modelsToCheck) {
-        try {
-          const health = await checkModelHealth(model.id);
-          results.push({ ...model, status: health.status, lastError: health.error });
-        } catch (e: any) {
-          results.push({ ...model, status: 'busy' as AIModelStatus, lastError: e?.message });
-        }
-      }
-      
-      setAvailableModels(prev => {
-        const updated = prev.map(m => {
-          const res = results.find(r => r.id === m.id);
-          if (res) {
-            console.log(`Model ${m.id} health check: ${res.status}. Current credits: ${m.credits}`);
-            return { 
-              ...m, 
-              status: res.status, 
-              lastError: res.lastError,
-              // SÓ força a zerar se o status for explicitamente 'no-credits' (Erro 429)
-              credits: res.status === 'no-credits' ? 0 : m.credits
-            };
-          }
-          return m;
-        });
-        return [...updated].sort((a, b) => b.credits - a.credits);
-      });
-
-      // Tenta manter o modelo selecionado ou escolhe o melhor disponível
-      setAvailableModels(prev => {
-        const currentSelected = prev.find(m => m.id === selectedModel);
-        if (!currentSelected || (currentSelected.status !== 'stable' && currentSelected.status !== 'busy')) {
-          const bestModel = prev.find(m => m.status === 'stable' && m.credits > 0);
-          if (bestModel) setSelectedModel(bestModel.id);
-        }
-        return prev;
-      });
-    } catch (err) {
-      console.error("Error checking models:", err);
-    } finally {
-      setIsCheckingModels(false);
-    }
-  }, [selectedModel, checkGeminiKey]);
+    setIsCheckingModels(false);
+  }, [checkGeminiKey]);
 
   useEffect(() => {
     // Busca usuário inicial
@@ -1919,10 +1874,10 @@ const App: React.FC = () => {
                   })}
               </select>
               <button 
-                onClick={() => checkAllModels(selectedModel)} 
+                onClick={checkAllModels} 
                 disabled={isCheckingModels}
                 className="p-2 bg-slate-100 text-slate-500 rounded-xl hover:bg-blue-50 hover:text-blue-600 transition-all shadow-sm disabled:opacity-50"
-                title="Sincronizar Créditos do Modelo Selecionado"
+                title="Verificar Chave de API"
               >
                 <svg className={`w-3.5 h-3.5 ${isCheckingModels ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
