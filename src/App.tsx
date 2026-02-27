@@ -263,18 +263,26 @@ const CreditMeter: React.FC<{ model: AIModelConfig; hasKey: boolean }> = ({ mode
   let textColor = "text-emerald-600";
   let dotColor = "bg-emerald-500";
   let label = "CONFIÁVEL";
+  let tooltip = "Modelo operacional e estável.";
   
   if (!hasKey || model.status === 'invalid-key') {
     statusColor = "bg-red-500 shadow-red-500/50"; textColor = "text-red-600"; dotColor = "bg-red-500"; label = "CHAVE INVÁLIDA";
+    tooltip = model.lastError || "Chave de API não configurada ou inválida.";
   } else if (model.status === 'no-credits' || model.credits === 0) {
     statusColor = "bg-red-500 shadow-red-500/50"; textColor = "text-red-600"; dotColor = "bg-red-500"; label = "SEM CRÉDITOS";
+    tooltip = model.lastError || "Limite de cota atingido para esta chave.";
+  } else if (model.status === 'model-not-found') {
+    statusColor = "bg-purple-500 shadow-purple-500/50"; textColor = "text-purple-600"; dotColor = "bg-purple-500"; label = "INDISPONÍVEL";
+    tooltip = model.lastError || "Este modelo não está disponível para sua chave.";
   } else if (model.status === 'busy' || percentage < 30) {
     statusColor = "bg-orange-500 shadow-orange-500/50"; textColor = "text-orange-600"; dotColor = "bg-orange-500"; label = "ATENÇÃO";
+    tooltip = model.lastError || "Modelo instável ou com poucos créditos.";
   } else if (model.status === 'unknown') {
     statusColor = "bg-slate-300 shadow-slate-300/50"; textColor = "text-slate-400"; dotColor = "bg-slate-400"; label = "TESTANDO...";
+    tooltip = "Verificando saúde do modelo...";
   }
   return (
-    <div className="flex flex-col gap-1 w-full sm:min-w-[160px]">
+    <div className="flex flex-col gap-1 w-full sm:min-w-[160px] group relative" title={tooltip}>
       <div className="flex justify-between items-center">
         <div className="flex items-center gap-1.5">
           <div className={`w-2 h-2 rounded-full ${dotColor} ${model.status === 'stable' ? 'animate-pulse' : ''}`}></div>
@@ -284,6 +292,12 @@ const CreditMeter: React.FC<{ model: AIModelConfig; hasKey: boolean }> = ({ mode
       </div>
       <div className="relative w-full h-3 bg-slate-100 rounded-full overflow-hidden border border-slate-200">
         <div className={`absolute top-0 left-0 h-full transition-all duration-1000 shadow-[0_0_10px] ${statusColor}`} style={{ width: `${percentage}%` }} />
+      </div>
+      {/* Tooltip simplificado */}
+      <div className="absolute bottom-full left-0 mb-2 hidden group-hover:block z-50">
+        <div className="bg-slate-900 text-white text-[8px] font-bold px-2 py-1 rounded shadow-xl whitespace-nowrap uppercase tracking-tighter">
+          {tooltip}
+        </div>
       </div>
     </div>
   );
@@ -444,29 +458,38 @@ const App: React.FC = () => {
   const checkAllModels = useCallback(async () => {
     setIsCheckingModels(true);
     
+    // Verifica a chave antes de testar os modelos
+    const hasKey = await checkGeminiKey();
+    
     // Preserva os créditos atuais se existirem, senão usa os iniciais
     setAvailableModels(prev => {
       const current = prev.length > 0 ? prev : INITIAL_MODELS;
       return current.map(m => ({ ...m, status: 'unknown' }));
     });
     
-    // Verifica a chave antes de testar os modelos
-    await checkGeminiKey();
-    
     try {
       const results = await Promise.all(INITIAL_MODELS.map(async (model) => {
         try {
           const health = await checkModelHealth(model.id);
-          return { ...model, status: health.status };
-        } catch (e) {
-          return { ...model, status: 'busy' as AIModelStatus };
+          return { ...model, status: health.status, lastError: health.error };
+        } catch (e: any) {
+          return { ...model, status: 'busy' as AIModelStatus, lastError: e?.message };
         }
       }));
       
       setAvailableModels(prev => {
         const updated = prev.map(m => {
           const res = results.find(r => r.id === m.id);
-          return res ? { ...m, status: res.status } : m;
+          if (res) {
+            return { 
+              ...m, 
+              status: res.status, 
+              lastError: res.lastError,
+              // Se o status for no-credits e ainda tiver créditos, força a zerar para refletir a realidade da API
+              credits: res.status === 'no-credits' ? 0 : m.credits
+            };
+          }
+          return m;
         });
         return [...updated].sort((a, b) => b.credits - a.credits);
       });
@@ -799,14 +822,23 @@ const App: React.FC = () => {
 
   const handleError = (err: any, modelId: AIModelId) => {
     const errorMsg = String(err?.message || "").toUpperCase();
+    let status: AIModelStatus = 'busy';
+    let lastError = err?.message;
+
     if (errorMsg.includes("429") || errorMsg.includes("QUOTA") || errorMsg.includes("CREDITS") || errorMsg.includes("LIMIT")) {
-      updateModelStatus(modelId, 'no-credits');
-      setAvailableModels(prev => prev.map(m => m.id === modelId ? { ...m, credits: 0 } : m));
+      status = 'no-credits';
+      lastError = "Cota de API excedida.";
+      setAvailableModels(prev => prev.map(m => m.id === modelId ? { ...m, credits: 0, status: 'no-credits', lastError } : m));
     } else if (errorMsg.includes("401") || errorMsg.includes("403") || errorMsg.includes("API_KEY_INVALID") || errorMsg.includes("PERMISSION_DENIED")) {
-      updateModelStatus(modelId, 'invalid-key');
-    } else {
-      updateModelStatus(modelId, 'busy');
+      status = 'invalid-key';
+      lastError = "Chave de API inválida.";
+    } else if (errorMsg.includes("404") || errorMsg.includes("NOT_FOUND")) {
+      status = 'model-not-found';
+      lastError = "Modelo não encontrado.";
     }
+
+    updateModelStatus(modelId, status);
+    setAvailableModels(prev => prev.map(m => m.id === modelId ? { ...m, status, lastError } : m));
   };
 
   const processLaudoFiles = async (files: File[]) => {

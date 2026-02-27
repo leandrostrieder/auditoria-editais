@@ -1,5 +1,5 @@
 import { GoogleGenAI, Type } from "@google/genai";
-import { AuctionCategory, AIModelId, ReferenceDoc } from "../types";
+import { AuctionCategory, AIModelId, ReferenceDoc, AIModelStatus } from "../types";
 
 function sanitizeText(text: string): string {
   if (!text) return "";
@@ -61,12 +61,12 @@ function getApiKey(): string {
 /**
  * Verifica se o modelo está respondendo.
  */
-export async function checkModelHealth(modelId: AIModelId): Promise<{ status: 'stable' | 'no-credits' | 'invalid-key' | 'busy' }> {
+export async function checkModelHealth(modelId: AIModelId): Promise<{ status: AIModelStatus; error?: string }> {
   try {
     const apiKey = getApiKey();
     if (!apiKey) {
       console.warn(`Health check skipped for ${modelId}: No API Key found.`);
-      return { status: 'invalid-key' };
+      return { status: 'invalid-key', error: "Chave de API não configurada no ambiente." };
     }
     
     const ai = new GoogleGenAI({ apiKey });
@@ -83,19 +83,24 @@ export async function checkModelHealth(modelId: AIModelId): Promise<{ status: 's
     if (response && response.text) {
       return { status: 'stable' };
     }
-    return { status: 'busy' };
+    return { status: 'busy', error: "Resposta vazia do modelo." };
   } catch (error: any) {
     const msg = String(error?.message || "").toUpperCase();
     console.warn(`Health check failed for ${modelId}:`, msg);
     
     if (msg.includes("401") || msg.includes("403") || msg.includes("API_KEY_INVALID") || msg.includes("INVALID_ARGUMENT") || msg.includes("PERMISSION_DENIED")) {
-      return { status: 'invalid-key' };
+      return { status: 'invalid-key', error: error?.message || "Erro de autenticação (Chave Inválida)." };
     }
     
-    if (msg.includes("429") || msg.includes("QUOTA") || msg.includes("LIMIT") || msg.includes("CREDIT") || msg.includes("CREDITS") || msg.includes("NOT_FOUND")) {
-      return { status: 'no-credits' };
+    if (msg.includes("429") || msg.includes("QUOTA") || msg.includes("LIMIT") || msg.includes("CREDIT") || msg.includes("CREDITS")) {
+      return { status: 'no-credits', error: "Cota de API excedida ou sem créditos disponíveis." };
     }
-    return { status: 'busy' };
+
+    if (msg.includes("404") || msg.includes("NOT_FOUND") || msg.includes("MODEL_NOT_FOUND")) {
+      return { status: 'model-not-found', error: "Modelo não disponível para esta chave ou região." };
+    }
+
+    return { status: 'busy', error: error?.message || "Erro desconhecido na verificação de saúde." };
   }
 }
 
