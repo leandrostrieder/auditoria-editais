@@ -230,6 +230,7 @@ export async function generateNoticeDocument(
 ): Promise<void> {
   try {
     if (typeof JSZip === 'undefined') throw new Error("Biblioteca JSZip não carregada.");
+    if (format === 'docx' && typeof saveAs === 'undefined') throw new Error("Biblioteca FileSaver não carregada.");
     if (format === 'pdf' && (typeof mammoth === 'undefined' || typeof html2pdf === 'undefined')) {
       throw new Error("Bibliotecas de PDF (mammoth/html2pdf) não carregadas.");
     }
