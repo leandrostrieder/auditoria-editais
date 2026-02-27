@@ -37,11 +37,11 @@ declare global {
 }
 
 const INITIAL_MODELS: AIModelConfig[] = [
-  { id: 'gemini-3-pro-preview', name: 'Gemini 3 Pro', description: 'Alta Precisão', tier: 'High', status: 'unknown', credits: 50, maxCredits: 50 },
-  { id: 'gemini-3-flash-preview', name: 'Gemini 3 Flash', description: 'Alta Velocidade', tier: 'Medium', status: 'unknown', credits: 100, maxCredits: 100 },
-  { id: 'gemini-2.5-flash-latest', name: 'Gemini 2.5 Flash', description: 'Máxima Estabilidade', tier: 'Medium', status: 'unknown', credits: 150, maxCredits: 150 },
-  { id: 'gemini-flash-latest', name: 'Gemini Flash', description: 'Equilíbrio Ideal', tier: 'Medium', status: 'unknown', credits: 200, maxCredits: 200 },
-  { id: 'gemini-flash-lite-latest', name: 'Gemini Flash Lite', description: 'Alta Disponibilidade', tier: 'Low', status: 'unknown', credits: 500, maxCredits: 500 },
+  { id: 'gemini-3-pro-preview', name: 'Gemini 3 Pro', description: 'Alta Precisão', tier: 'High', status: 'stable', credits: 50, maxCredits: 50 },
+  { id: 'gemini-3-flash-preview', name: 'Gemini 3 Flash', description: 'Alta Velocidade', tier: 'Medium', status: 'stable', credits: 100, maxCredits: 100 },
+  { id: 'gemini-2.5-flash-latest', name: 'Gemini 2.5 Flash', description: 'Máxima Estabilidade', tier: 'Medium', status: 'stable', credits: 150, maxCredits: 150 },
+  { id: 'gemini-flash-latest', name: 'Gemini Flash', description: 'Equilíbrio Ideal', tier: 'Medium', status: 'stable', credits: 200, maxCredits: 200 },
+  { id: 'gemini-flash-lite-latest', name: 'Gemini Flash Lite', description: 'Alta Disponibilidade', tier: 'Low', status: 'stable', credits: 500, maxCredits: 500 },
 ];
 
 const INTERNAL_USER = {
@@ -452,7 +452,7 @@ const App: React.FC = () => {
       localStorage.setItem('sg_manual_api_key', manualKey.trim());
       setApiKey(manualKey.trim());
       setHasGeminiKey(true);
-      checkAllModels();
+      checkAllModels(selectedModel);
       alert("Chave de API manual salva com sucesso!");
     } else {
       localStorage.removeItem('sg_manual_api_key');
@@ -468,14 +468,14 @@ const App: React.FC = () => {
         await window.aistudio.openSelectKey();
         // Após abrir o seletor, assumimos sucesso e re-verificamos
         setHasGeminiKey(true);
-        checkAllModels();
+        checkAllModels(selectedModel);
       }
     } catch (e) {
       console.error("Erro ao abrir seletor de chave:", e);
     }
   };
 
-  const checkAllModels = useCallback(async () => {
+  const checkAllModels = useCallback(async (targetModelId?: AIModelId) => {
     setIsCheckingModels(true);
     
     // Verifica a chave antes de testar os modelos
@@ -484,13 +484,18 @@ const App: React.FC = () => {
     // Preserva os créditos atuais se existirem, senão usa os iniciais
     setAvailableModels(prev => {
       const current = prev.length > 0 ? prev : INITIAL_MODELS;
-      return current.map(m => ({ ...m, status: 'unknown' }));
+      return current.map(m => (!targetModelId || m.id === targetModelId) ? { ...m, status: 'unknown' } : m);
     });
     
     try {
+      // Filtra quais modelos verificar para economizar cota (Free Tier)
+      const modelsToCheck = targetModelId 
+        ? INITIAL_MODELS.filter(m => m.id === targetModelId)
+        : INITIAL_MODELS;
+
       // Execução SEQUENCIAL para evitar 429 (Rate Limit) durante o health check
       const results = [];
-      for (const model of INITIAL_MODELS) {
+      for (const model of modelsToCheck) {
         try {
           const health = await checkModelHealth(model.id);
           results.push({ ...model, status: health.status, lastError: health.error });
@@ -727,7 +732,7 @@ const App: React.FC = () => {
   const [tempSettings, setTempSettings] = useState<AppSettings>(settings);
 
   useEffect(() => {
-    checkAllModels();
+    // checkAllModels() removido para evitar consumo de cota no startup
   }, []);
 
   const decrementCredits = useCallback((modelId: AIModelId) => {
@@ -1914,10 +1919,10 @@ const App: React.FC = () => {
                   })}
               </select>
               <button 
-                onClick={checkAllModels} 
+                onClick={() => checkAllModels(selectedModel)} 
                 disabled={isCheckingModels}
                 className="p-2 bg-slate-100 text-slate-500 rounded-xl hover:bg-blue-50 hover:text-blue-600 transition-all shadow-sm disabled:opacity-50"
-                title="Sincronizar Créditos Reais"
+                title="Sincronizar Créditos do Modelo Selecionado"
               >
                 <svg className={`w-3.5 h-3.5 ${isCheckingModels ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
