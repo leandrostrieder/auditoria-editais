@@ -123,6 +123,17 @@ async function startServer() {
     res.json({ user: req.session?.user || null });
   });
 
+  app.get("/api/config", (req, res) => {
+    // Só envia a chave se houver um usuário autenticado (segurança básica)
+    if (req.session?.user) {
+      res.json({ 
+        GEMINI_API_KEY: process.env.GEMINI_API_KEY || process.env.API_KEY || "" 
+      });
+    } else {
+      res.status(401).json({ error: "Não autenticado" });
+    }
+  });
+
   app.post("/api/auth/logout", (req, res) => {
     if (req.session) {
       req.session = null;

@@ -34,15 +34,34 @@ function getModelConfig(modelId: AIModelId) {
 }
 
 /**
- * Obtém a chave de API de forma dinâmica para suportar injeção em tempo de execução.
+ * Obtém a chave de API de forma dinâmica.
+ * Tenta primeiro o process.env (AI Studio), depois o localStorage (cache de login), depois o servidor.
  */
-function getApiKey(): string {
-  // @ts-ignore - process.env pode ser injetado globalmente no browser pelo AI Studio
-  const key = (typeof process !== 'undefined' && process.env) ? (process.env.GEMINI_API_KEY || process.env.API_KEY) : null;
-  if (key) return key;
+async function getApiKey(): Promise<string> {
+  // 1. Tenta process.env (Injetado pelo AI Studio no Preview)
+  // @ts-ignore
+  const envKey = (typeof process !== 'undefined' && process.env) ? (process.env.GEMINI_API_KEY || process.env.API_KEY) : null;
+  if (envKey) return envKey;
+
+  // 2. Tenta o cache do localStorage (armazenado após fetch do /api/config)
+  const cachedKey = localStorage.getItem('SG_GEMINI_API_KEY');
+  if (cachedKey) return cachedKey;
+
+  // 3. Tenta buscar do servidor (Para ambientes externos como Render)
+  try {
+    const res = await fetch('/api/config');
+    if (res.ok) {
+      const data = await res.json();
+      if (data.GEMINI_API_KEY) {
+        localStorage.setItem('SG_GEMINI_API_KEY', data.GEMINI_API_KEY);
+        return data.GEMINI_API_KEY;
+      }
+    }
+  } catch (e) {
+    console.warn("Erro ao buscar config do servidor:", e);
+  }
   
-  // Fallback para variáveis do Vite (build time)
-  return (import.meta as any).env?.VITE_GEMINI_API_KEY || "";
+  return "";
 }
 
 /**
@@ -50,16 +69,16 @@ function getApiKey(): string {
  */
 export async function checkModelHealth(modelId: AIModelId): Promise<{ status: 'stable' | 'no-credits' | 'busy' }> {
   try {
-    const apiKey = getApiKey();
+    const apiKey = await getApiKey();
     if (!apiKey) {
       console.warn(`Health check skipped for ${modelId}: No API Key found.`);
-      return { status: 'busy' };
+      return { status: 'no-credits' }; // Se não tem chave, não tem créditos
     }
     
     console.log(`Checking health for ${modelId} using key: ${apiKey.substring(0, 4)}...${apiKey.substring(apiKey.length - 4)}`);
     const ai = new GoogleGenAI({ apiKey });
     
-    // Simplificamos a chamada de saúde para evitar erros de configuração de thinking
+    // Chamada de teste real
     const response = await ai.models.generateContent({
       model: modelId,
       contents: "Responda apenas: OK",
@@ -75,10 +94,15 @@ export async function checkModelHealth(modelId: AIModelId): Promise<{ status: 's
     return { status: 'busy' };
   } catch (error: any) {
     const msg = String(error?.message || "").toUpperCase();
-    console.warn(`Health check failed for ${modelId}:`, msg);
-    if (msg.includes("429") || msg.includes("QUOTA") || msg.includes("LIMIT") || msg.includes("CREDIT") || msg.includes("CREDITS") || msg.includes("NOT_FOUND")) {
+    console.error(`Health check failed for ${modelId}:`, msg);
+    
+    if (msg.includes("429") || msg.includes("QUOTA") || msg.includes("LIMIT") || msg.includes("CREDIT") || msg.includes("CREDITS") || msg.includes("BILLING") || msg.includes("NOT_FOUND")) {
       return { status: 'no-credits' };
     }
+    if (msg.includes("API_KEY_INVALID") || msg.includes("INVALID_ARGUMENT") || msg.includes("PERMISSION_DENIED")) {
+      return { status: 'no-credits' };
+    }
+    
     return { status: 'busy' };
   }
 }
@@ -87,8 +111,8 @@ export async function checkModelHealth(modelId: AIModelId): Promise<{ status: 's
  * Identifica metadados no edital base utilizando IA para substituição cirúrgica.
  */
 export async function identifyTemplateFields(text: string, metaRules: Record<string, any>, modelId: AIModelId, referenceDocs: ReferenceDoc[] = [], userContext?: any): Promise<any> {
-  const apiKey = getApiKey();
-  if (!apiKey) throw new Error("GEMINI_API_KEY not configured");
+  const apiKey = await getApiKey();
+  if (!apiKey) throw new Error("Chave de API não encontrada. Por favor, verifique sua conexão ou autenticação.");
   
   const ai = new GoogleGenAI({ apiKey });
   const sanitizedText = sanitizeText(text);
@@ -154,8 +178,8 @@ ${rulesDescription}`,
 }
 
 export async function parseLaudoText(text: string, modelId: AIModelId = 'gemini-3-pro-preview', customPrompts?: Record<string, string>, referenceDocs: ReferenceDoc[] = [], userContext?: any): Promise<any> {
-  const apiKey = getApiKey();
-  if (!apiKey) throw new Error("GEMINI_API_KEY not configured");
+  const apiKey = await getApiKey();
+  if (!apiKey) throw new Error("Chave de API não encontrada. Por favor, verifique sua conexão ou autenticação.");
 
   const ai = new GoogleGenAI({ apiKey });
   const sanitizedText = sanitizeText(text);
@@ -308,8 +332,8 @@ export async function parseLaudoText(text: string, modelId: AIModelId = 'gemini-
 }
 
 export async function parseOSText(text: string, tableRules: Record<string, string>, modelId: AIModelId = 'gemini-3-pro-preview', referenceDocs: ReferenceDoc[] = [], userContext?: any): Promise<{ groups: Array<{ tipo: AuctionCategory; placas: string[]; descriptions: Record<string, string> }> }> {
-  const apiKey = getApiKey();
-  if (!apiKey) throw new Error("GEMINI_API_KEY not configured");
+  const apiKey = await getApiKey();
+  if (!apiKey) throw new Error("Chave de API não encontrada. Por favor, verifique sua conexão ou autenticação.");
 
   const ai = new GoogleGenAI({ apiKey });
   const sanitizedText = sanitizeText(text);
