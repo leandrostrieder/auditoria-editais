@@ -355,39 +355,34 @@ const App: React.FC = () => {
   const [isCheckingModels, setIsCheckingModels] = useState(false);
 
   const checkAllModels = useCallback(async () => {
-    if (isCheckingModels) return;
+    // Usamos um sinalizador simples para evitar múltiplas verificações simultâneas
     setIsCheckingModels(true);
     
+    // Reset imediato para estado de "Verificando" e restauração de créditos (mock)
+    setAvailableModels(INITIAL_MODELS.map(m => ({ ...m, status: 'unknown' })));
+    
     try {
-      // Usamos o estado atual de availableModels para manter os créditos
-      setAvailableModels(prev => {
-        const modelsToProcess = [...prev];
-        
-        // Iniciamos a verificação assíncrona
-        Promise.all(modelsToProcess.map(async (model) => {
-          try {
-            const health = await checkModelHealth(model.id);
-            return { ...model, status: health.status };
-          } catch (e) {
-            return { ...model, status: 'busy' as AIModelStatus };
-          }
-        })).then(results => {
-          const sortedModels = results.sort((a, b) => b.credits - a.credits);
-          setAvailableModels(sortedModels);
-          
-          // Se o modelo selecionado não estiver estável, tenta selecionar o melhor disponível
-          const currentSelected = sortedModels.find(m => m.id === selectedModel);
-          if (!currentSelected || currentSelected.status !== 'stable') {
-            const bestModel = sortedModels.find(m => m.status === 'stable' && m.credits > 0);
-            if (bestModel) setSelectedModel(bestModel.id);
-          }
-          setIsCheckingModels(false);
-        });
+      const results = await Promise.all(INITIAL_MODELS.map(async (model) => {
+        try {
+          const health = await checkModelHealth(model.id);
+          return { ...model, status: health.status };
+        } catch (e) {
+          return { ...model, status: 'busy' as AIModelStatus };
+        }
+      }));
+      
+      const sortedModels = results.sort((a, b) => b.credits - a.credits);
+      setAvailableModels(sortedModels);
 
-        return prev; // Retorna o estado atual enquanto processa
-      });
+      // Tenta manter o modelo selecionado ou escolhe o melhor disponível
+      const currentSelected = sortedModels.find(m => m.id === selectedModel);
+      if (!currentSelected || currentSelected.status !== 'stable') {
+        const bestModel = sortedModels.find(m => m.status === 'stable' && m.credits > 0);
+        if (bestModel) setSelectedModel(bestModel.id);
+      }
     } catch (err) {
       console.error("Error checking models:", err);
+    } finally {
       setIsCheckingModels(false);
     }
   }, [selectedModel]);
@@ -407,6 +402,7 @@ const App: React.FC = () => {
     const handleMessage = (event: MessageEvent) => {
       if (event.data?.type === 'OAUTH_AUTH_SUCCESS') {
         console.log("OAuth success message received, fetching user data...");
+        // Pequeno delay para garantir processamento do cookie
         setTimeout(() => {
           fetch('/api/auth/me')
             .then(res => res.json())
@@ -415,13 +411,12 @@ const App: React.FC = () => {
                 setUser(data.user);
                 setIsDisconnected(false);
                 console.log("User authenticated successfully:", data.user.name);
+                // Forçamos a re-verificação dos modelos imediatamente após o login
                 checkAllModels();
-              } else {
-                console.warn("OAuth success message received but /api/auth/me returned null user");
               }
             })
             .catch(err => console.error("Error fetching user after OAuth:", err));
-        }, 1000);
+        }, 800);
       }
     };
     window.addEventListener('message', handleMessage);
