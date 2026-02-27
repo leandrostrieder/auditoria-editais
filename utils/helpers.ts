@@ -329,20 +329,11 @@ export async function generateNoticeDocument(
     const serializer = new XMLSerializer();
     let finalXml = serializer.serializeToString(xmlDoc);
 
-    // Limpeza de namespaces redundantes que podem corromper o DOCX no Word
-    // e garantia de um cabeçalho XML limpo e compatível.
-    try {
-      const rootElement = xmlDoc.documentElement;
-      const rootXml = serializer.serializeToString(rootElement);
-      // Remove declarações de namespace duplicadas que o serializador pode ter inserido nos nós filhos
-      const cleanedRootXml = rootXml.replace(/ xmlns:w="http:\/\/schemas\.openxmlformats\.org\/wordprocessingml\/2006\/main"/g, (match, offset) => {
-        // Mantém apenas a primeira ocorrência (no nó raiz)
-        return offset === rootXml.indexOf('xmlns:w=') ? match : "";
-      });
-      finalXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n' + cleanedRootXml;
-    } catch (e) {
-      console.warn("Falha na limpeza fina do XML, usando serialização padrão:", e);
+    // Garantia de um cabeçalho XML limpo e compatível, removendo duplicatas se existirem
+    if (finalXml.includes('<?xml')) {
+      finalXml = finalXml.replace(/^<\?xml[^?]*\?>\s*/, '');
     }
+    finalXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n' + finalXml;
 
     loadedZip.file("word/document.xml", finalXml);
     const finalBlob = await loadedZip.generateAsync({ 

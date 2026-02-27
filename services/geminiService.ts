@@ -38,7 +38,13 @@ function getModelConfig(modelId: AIModelId) {
  */
 function getApiKey(): string {
   // @ts-ignore - process.env pode ser injetado globalmente no browser pelo AI Studio
-  const key = (typeof process !== 'undefined' && process.env) ? (process.env.GEMINI_API_KEY || process.env.API_KEY) : null;
+  let key = null;
+  try {
+    if (typeof process !== 'undefined' && process.env) {
+      key = process.env.GEMINI_API_KEY || process.env.API_KEY;
+    }
+  } catch (e) {}
+
   if (key) return key;
   
   // Fallback para variáveis do Vite (build time)
