@@ -37,11 +37,11 @@ declare global {
 }
 
 const INITIAL_MODELS: AIModelConfig[] = [
-  { id: 'gemini-3-pro-preview', name: 'Gemini 3 Pro', description: 'Alta Precisão', tier: 'High', status: 'stable', credits: 50, maxCredits: 50 },
-  { id: 'gemini-3-flash-preview', name: 'Gemini 3 Flash', description: 'Alta Velocidade', tier: 'Medium', status: 'stable', credits: 100, maxCredits: 100 },
-  { id: 'gemini-2.5-flash-latest', name: 'Gemini 2.5 Flash', description: 'Máxima Estabilidade', tier: 'Medium', status: 'stable', credits: 150, maxCredits: 150 },
-  { id: 'gemini-flash-latest', name: 'Gemini Flash', description: 'Equilíbrio Ideal', tier: 'Medium', status: 'stable', credits: 200, maxCredits: 200 },
-  { id: 'gemini-flash-lite-latest', name: 'Gemini Flash Lite', description: 'Alta Disponibilidade', tier: 'Low', status: 'stable', credits: 500, maxCredits: 500 },
+  { id: 'gemini-3.1-pro-preview', name: 'Gemini 3.1 Pro', description: 'Máxima Inteligência (Pago)', tier: 'High', status: 'stable', credits: 1000, maxCredits: 1000 },
+  { id: 'gemini-3-flash-preview', name: 'Gemini 3 Flash', description: 'Velocidade e Precisão', tier: 'Medium', status: 'stable', credits: 2000, maxCredits: 2000 },
+  { id: 'gemini-2.5-flash-latest', name: 'Gemini 2.5 Flash', description: 'Estabilidade Corporativa', tier: 'Medium', status: 'stable', credits: 5000, maxCredits: 5000 },
+  { id: 'gemini-flash-latest', name: 'Gemini Flash', description: 'Uso Geral Otimizado', tier: 'Medium', status: 'stable', credits: 5000, maxCredits: 5000 },
+  { id: 'gemini-flash-lite-latest', name: 'Gemini Flash Lite', description: 'Leve e Econômico', tier: 'Low', status: 'stable', credits: 10000, maxCredits: 10000 },
 ];
 
 const INTERNAL_USER = {
@@ -390,6 +390,7 @@ const App: React.FC = () => {
   const [isCheckingModels, setIsCheckingModels] = useState(false);
   const [hasGeminiKey, setHasGeminiKey] = useState(false);
   const [manualKey, setManualKey] = useState<string>(() => localStorage.getItem('sg_manual_api_key') || '');
+  const [isPaidAccount, setIsPaidAccount] = useState<boolean>(() => localStorage.getItem('sg_is_paid_account') === 'true');
 
   // Verifica se o usuário selecionou uma chave de API no AI Studio ou se há uma manual
   const checkGeminiKey = useCallback(async () => {
@@ -403,7 +404,16 @@ const App: React.FC = () => {
         return true;
       }
 
-      // 1. Verifica se a chave está injetada no ambiente (process.env ou window.process.env)
+      // 1. Verifica se há uma chave padrão definida no ambiente VITE (Configuração por padrão)
+      const viteKey = (import.meta as any).env.VITE_GEMINI_API_KEY;
+      if (viteKey && viteKey.length > 10) {
+        console.log("Using default VITE Gemini Key");
+        setApiKey(viteKey);
+        setHasGeminiKey(true);
+        return true;
+      }
+
+      // 2. Verifica se a chave está injetada no ambiente (process.env ou window.process.env)
       // @ts-ignore
       const globalProcess = (typeof window !== 'undefined' && (window as any).process) || (typeof process !== 'undefined' ? process : null);
       let envKey = globalProcess?.env?.GEMINI_API_KEY || globalProcess?.env?.API_KEY;
@@ -451,14 +461,25 @@ const App: React.FC = () => {
   const handleSaveManualKey = () => {
     if (manualKey.trim()) {
       localStorage.setItem('sg_manual_api_key', manualKey.trim());
+      localStorage.setItem('sg_is_paid_account', String(isPaidAccount));
       setApiKey(manualKey.trim());
       setHasGeminiKey(true);
-      // Resetamos os créditos para o valor inicial ao trocar de chave
+      
+      // Se for conta paga, usamos os créditos do INITIAL_MODELS (que agora são altos)
+      // Caso contrário, resetamos para o padrão
       setAvailableModels(INITIAL_MODELS.map(m => ({ ...m, status: 'stable' })));
-      alert("Chave de API manual salva com sucesso! Os créditos foram resetados visualmente.");
+      
+      if (user) {
+        const storageKey = `sg_credits_${user.email || 'guest'}`;
+        localStorage.setItem(storageKey, JSON.stringify(INITIAL_MODELS.map(m => ({ id: m.id, credits: m.credits }))));
+      }
+      
+      alert(`Chave de API manual salva com sucesso! ${isPaidAccount ? 'Modo Conta Paga ativado com limites profissionais.' : 'Os créditos foram resetados visualmente.'}`);
     } else {
       localStorage.removeItem('sg_manual_api_key');
+      localStorage.removeItem('sg_is_paid_account');
       setManualKey('');
+      setIsPaidAccount(false);
       checkGeminiKey();
       alert("Chave manual removida. O sistema tentará usar a chave do servidor.");
     }
@@ -705,6 +726,8 @@ const App: React.FC = () => {
     setAvailableModels(prev => {
       const updated = prev.map(m => {
         if (m.id === modelId) {
+          // Para contas pagas (identificadas por chave manual ou padrão), o decremento é simbólico ou nulo
+          // Aqui mantemos o decremento mas com base em limites muito maiores
           const newCredits = Math.max(0, m.credits - 1);
           return { ...m, credits: newCredits, status: newCredits === 0 ? 'no-credits' : m.status };
         }
@@ -1779,32 +1802,47 @@ const App: React.FC = () => {
                         </div>
 
                         <div className="space-y-3 p-4 bg-white rounded-2xl border border-emerald-100">
-                          <div className="flex flex-col gap-1">
-                            <label className="text-[8px] font-black text-slate-400 uppercase">Configuração Manual (Ambiente Externo)</label>
-                            <div className="flex gap-2">
-                              <input 
-                                type="password" 
-                                value={manualKey}
-                                onChange={(e) => setManualKey(e.target.value)}
-                                placeholder="Insira sua GEMINI_API_KEY..."
-                                className="flex-1 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-[10px] font-mono outline-none focus:ring-1 focus:ring-emerald-500"
-                              />
-                              <button 
-                                onClick={handleSaveManualKey}
-                                className="px-4 py-2 bg-emerald-600 text-white rounded-xl text-[9px] font-black uppercase hover:bg-emerald-700 transition-all"
-                              >
-                                Salvar
-                              </button>
+                            <div className="flex flex-col gap-1">
+                              <label className="text-[8px] font-black text-slate-400 uppercase">Configuração Manual (Ambiente Externo)</label>
+                              <div className="flex gap-2">
+                                <input 
+                                  type="password" 
+                                  value={manualKey}
+                                  onChange={(e) => setManualKey(e.target.value)}
+                                  placeholder="Insira sua GEMINI_API_KEY..."
+                                  className="flex-1 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-[10px] font-mono outline-none focus:ring-1 focus:ring-emerald-500"
+                                />
+                                <button 
+                                  onClick={handleSaveManualKey}
+                                  className="px-4 py-2 bg-emerald-600 text-white rounded-xl text-[9px] font-black uppercase hover:bg-emerald-700 transition-all"
+                                >
+                                  Salvar
+                                </button>
+                              </div>
                             </div>
-                          </div>
-                          <div className="p-3 bg-orange-50 rounded-xl border border-orange-100">
-                            <p className="text-[8px] font-black text-orange-800 uppercase mb-1">Aviso de Cota (Free Tier):</p>
-                            <p className="text-[7px] text-orange-700 leading-relaxed">
-                              O Google limita contas gratuitas a <strong>20 requisições por dia</strong> em alguns modelos (como o Flash Lite). 
-                              Se você atingir esse limite, o sistema mostrará "SEM CRÉDITOS" até que a cota seja renovada pelo Google. 
-                              Considere usar uma chave com faturamento ativado para limites maiores.
-                            </p>
-                          </div>
+                            
+                            <label className="flex items-center gap-3 p-3 bg-slate-50 rounded-xl border border-slate-200 cursor-pointer group hover:bg-white transition-all">
+                              <input 
+                                type="checkbox" 
+                                checked={isPaidAccount}
+                                onChange={(e) => setIsPaidAccount(e.target.checked)}
+                                className="w-4 h-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+                              />
+                              <div className="flex flex-col">
+                                <span className="text-[9px] font-black text-slate-700 uppercase group-hover:text-emerald-600 transition-colors">Conta com Faturamento Ativo (Pago)</span>
+                                <span className="text-[7px] text-slate-400 font-medium leading-tight mt-0.5">Habilite se sua chave for de um projeto com faturamento (Pay-as-you-go). Isso ajustará os limites de créditos exibidos no sistema para refletir a cota profissional.</span>
+                              </div>
+                            </label>
+
+                            {!isPaidAccount && (
+                              <div className="p-3 bg-orange-50 rounded-xl border border-orange-100">
+                                <p className="text-[8px] font-black text-orange-800 uppercase mb-1">Aviso de Cota (Free Tier):</p>
+                                <p className="text-[7px] text-orange-700 leading-relaxed">
+                                  O Google limita contas gratuitas a <strong>20 requisições por dia</strong> em alguns modelos (como o Flash Lite). 
+                                  Se você atingir esse limite, o sistema mostrará "SEM CRÉDITOS" até que a cota seja renovada pelo Google. 
+                                </p>
+                              </div>
+                            )}
                           <div className="flex flex-col gap-2">
                             <button 
                               onClick={handleResetCredits}
