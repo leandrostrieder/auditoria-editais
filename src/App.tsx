@@ -333,7 +333,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   rules: {
     lote: createInstructionRule("Localize o número do lote ou item no documento."),
     placa: createInstructionRule("Identifique a placa do veículo (Padrão Mercosul ou Antigo)."),
-    descricaoObjeto: createInstructionRule("BUSCA PRIORITÁRIA EM 'ORDEM DE SERVIÇO': Localize a placa deste veículo nos documentos de referência. Se encontrar a placa em uma 'Ordem de Serviço', extraia o texto INTEGRAL, COMPLETO e EXATO do campo/coluna 'Descrição' desta mesma linha. NÃO RESUMA, NÃO OMITA NADA. Se a placa NÃO for encontrada na Ordem de Serviço, extraia a descrição técnica (Marca, Modelo, Ano, Cor, Chassi, Motor, Renavam) do próprio laudo."),
+    descricaoObjeto: createInstructionRule("BUSCA PRIORITÁRIA EM 'ORDEM DE SERVIÇO': Localize a placa deste veículo nos documentos de referência. Se encontrar a placa em uma 'Ordem de Serviço', extraia o texto INTEGRAL, COMPLETO e EXATO EXCLUSIVAMENTE do campo/coluna 'Descrição' desta mesma linha. É RIGOROSAMENTE PROIBIDO incluir informações de outras colunas como 'Localização', 'Pátio', 'Cidade' ou 'Endereço'. Se a placa NÃO for encontrada na Ordem de Serviço, extraia a descrição técnica (Marca, Modelo, Ano, Cor, Chassi, Motor, Renavam) do próprio laudo."),
     condicoes: createInstructionRule("Identifique o estado de conservação ou classificação do bem (ex: Sucata, Recuperável)."),
     valorAvaliacao: createInstructionRule("Localize o valor da avaliação pericial do bem."),
     lanceInicial: createInstructionRule("Determine o valor do lance inicial conforme as diretrizes do edital ou categoria."),
@@ -452,13 +452,23 @@ const App: React.FC = () => {
       localStorage.setItem('sg_manual_api_key', manualKey.trim());
       setApiKey(manualKey.trim());
       setHasGeminiKey(true);
-      checkAllModels();
-      alert("Chave de API manual salva com sucesso!");
+      // Resetamos os créditos para o valor inicial ao trocar de chave
+      setAvailableModels(INITIAL_MODELS.map(m => ({ ...m, status: 'stable' })));
+      alert("Chave de API manual salva com sucesso! Os créditos foram resetados visualmente.");
     } else {
       localStorage.removeItem('sg_manual_api_key');
       setManualKey('');
       checkGeminiKey();
       alert("Chave manual removida. O sistema tentará usar a chave do servidor.");
+    }
+  };
+
+  const handleResetCredits = () => {
+    if (user) {
+      const storageKey = `sg_credits_${user.email || 'guest'}`;
+      localStorage.removeItem(storageKey);
+      setAvailableModels(INITIAL_MODELS.map(m => ({ ...m, status: 'stable' })));
+      alert("Cache de créditos limpo com sucesso!");
     }
   };
 
@@ -1731,9 +1741,17 @@ const App: React.FC = () => {
                               Considere usar uma chave com faturamento ativado para limites maiores.
                             </p>
                           </div>
-                          <p className="text-[7px] text-slate-400 font-medium leading-relaxed">
-                            Obtenha uma chave gratuita em <a href="https://aistudio.google.com/app/apikey" target="_blank" className="text-blue-500 underline">Google AI Studio</a>.
-                          </p>
+                          <div className="flex flex-col gap-2">
+                            <button 
+                              onClick={handleResetCredits}
+                              className="px-4 py-2 bg-slate-100 text-slate-600 rounded-xl text-[9px] font-black uppercase hover:bg-slate-200 transition-all border border-slate-200"
+                            >
+                              Resetar Cache de Créditos
+                            </button>
+                            <p className="text-[7px] text-slate-400 font-medium leading-relaxed">
+                              Obtenha uma chave gratuita em <a href="https://aistudio.google.com/app/apikey" target="_blank" className="text-blue-500 underline">Google AI Studio</a>.
+                            </p>
+                          </div>
                         </div>
 
                         {!hasGeminiKey && (

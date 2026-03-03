@@ -23,8 +23,8 @@ function getModelConfig(modelId: AIModelId) {
     responseMimeType: "application/json",
   };
 
-  // Thinking Config is recommended for Gemini 3 and 2.5 series models.
-  if (modelId.includes('gemini-3') || modelId.includes('gemini-2.5')) {
+  // Thinking Config is only for Gemini 3 series models.
+  if (modelId.includes('gemini-3')) {
     config.thinkingConfig = { 
       thinkingBudget: modelId.includes('pro') ? 32768 : 16000 
     };
@@ -121,9 +121,10 @@ ${rulesDescription}`,
     });
 
     if (!response.text) throw new Error("Resposta vazia da IA na identificação de campos.");
+    console.log(`[AI] Identify Fields Success: ${modelId}`);
     return JSON.parse(response.text);
-  } catch (error) {
-    console.error("Erro identifyTemplateFields:", error);
+  } catch (error: any) {
+    console.error(`[AI] Identify Fields Error: ${modelId}`, error);
     throw error;
   }
 }
@@ -177,7 +178,7 @@ export async function parseLaudoText(text: string, modelId: AIModelId = 'gemini-
         REGRAS DE OURO:
         1. CRUZAMENTO DE DADOS: Use a PLACA encontrada no laudo para buscar informações complementares nos <reference_documents>.
         2. PRIORIDADE: Se a instrução de um campo mencionar busca em documentos de referência (ex: Ordem de Serviço), os dados encontrados lá têm precedência absoluta sobre o laudo.
-        3. INTEGRIDADE: Para o campo 'descricaoObjeto', se a instrução pedir dados da Ordem de Serviço, extraia o texto EXATO e COMPLETO da coluna 'Descrição' correspondente à placa.
+        3. INTEGRIDADE: Para o campo 'descricaoObjeto', se a instrução pedir dados da Ordem de Serviço, extraia o texto EXATO e COMPLETO da coluna 'Descrição' correspondente à placa. JAMAIS inclua informações de outras colunas (como 'Localização', 'Pátio', etc) no campo de descrição.
         4. ORIGEM DOS DADOS: Para cada campo, identifique a origem da informação no objeto 'origins'. Use:
            - 'Laudo': Se a informação veio do texto principal do laudo.
            - 'Ordem de Serviço': Se a informação veio de um documento de referência do tipo Ordem de Serviço.
@@ -234,6 +235,7 @@ export async function parseLaudoText(text: string, modelId: AIModelId = 'gemini-
     });
 
     if (!response.text) throw new Error("Resposta vazia da IA");
+    console.log(`[AI] Parse Laudo Success: ${modelId}`);
     
     const rawData = JSON.parse(response.text);
     const data = {
@@ -276,8 +278,8 @@ export async function parseLaudoText(text: string, modelId: AIModelId = 'gemini-
         contatoAgendamento: contatoOrigin
       }
     };
-  } catch (error) {
-    console.error("Erro parseLaudoText:", error);
+  } catch (error: any) {
+    console.error(`[AI] Parse Laudo Error: ${modelId}`, error);
     throw error;
   }
 }
@@ -304,7 +306,12 @@ export async function parseOSText(text: string, tableRules: Record<string, strin
         MISSÃO: 
         1. Identificar blocos de veículos agrupados sob títulos específicos de categoria.
         2. Extrair as placas brasileiras (7 caracteres).
-        3. Para cada placa, extrair o texto INTEGRAL e EXATO da coluna/campo 'Descrição' correspondente.
+        3. Para cada placa, extrair o texto INTEGRAL e EXATO da coluna/campo 'Descrição' correspondente. 
+        
+        ATENÇÃO RIGOROSA: 
+        - Extraia APENAS o conteúdo da coluna de descrição técnica do bem.
+        - É PROIBIDO incluir informações de outras colunas como 'Localização', 'Pátio', 'Cidade' ou 'Endereço' no campo 'descricao'.
+        - Se o texto da descrição contiver quebras de linha, mantenha-as, mas não anexe dados de células vizinhas.
         
         CATEGORIAS E REGRAS DE ENQUADRAMENTO:
         ${categoriesDescription}
@@ -371,8 +378,8 @@ export async function parseOSText(text: string, tableRules: Record<string, strin
     }).filter((g: any) => g.placas.length > 0);
 
     return { groups: normalizedGroups };
-  } catch (e) {
-    console.error("Erro Crítico no Parsing de OS:", e);
+  } catch (e: any) {
+    console.error(`[AI] Parse OS Error: ${modelId}`, e);
     return { groups: [] };
   }
 }
