@@ -425,9 +425,13 @@ const App: React.FC = () => {
         return true;
       }
 
-      // 2. Tenta buscar do servidor (útil para full-stack onde a chave está no backend)
+      // 2. Tenta buscar do servidor com timeout
       try {
-        const res = await fetch('/api/config');
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 3000);
+        const res = await fetch('/api/config', { signal: controller.signal });
+        clearTimeout(timeoutId);
+        
         if (res.ok) {
           const config = await res.json();
           const serverKey = config.GEMINI_API_KEY || config.API_KEY;
@@ -439,7 +443,7 @@ const App: React.FC = () => {
           }
         }
       } catch (e) {
-        console.error("Error fetching config from server:", e);
+        console.warn("Config fetch failed or timed out:", e);
       }
 
       // 3. Verifica via API do AI Studio (seletor de chave)
@@ -800,9 +804,13 @@ const App: React.FC = () => {
     setIsScanningMeta(true);
     try {
       const fields = await scanTemplateFields(file, currentSettings, selectedModel, user);
+      if (fields.length === 0) {
+        alert("⚠️ Nenhum campo de metadado foi identificado no edital. Verifique se os prompts nas configurações estão corretos.");
+      }
       setDocFields(fields);
     } catch (err: any) {
       console.error("Erro na varredura de metadados:", err);
+      alert(`❌ Erro ao analisar edital: ${err.message || "Erro desconhecido"}`);
     } finally {
       setIsScanningMeta(false);
     }
@@ -881,7 +889,8 @@ const App: React.FC = () => {
 
     const allRefDocs = [...settings.referenceDocs, ...osDocs];
 
-    await Promise.all(files.map(async (file) => {
+    // Processamento sequencial para evitar erro de quota (429) por excesso de requisições simultâneas
+    for (const file of files) {
       setLaudoProgress(p => ({ ...p, [file.name]: { name: file.name, progress: 10, status: 'loading' } }));
       try {
         const text = await fileToText(file);
@@ -939,14 +948,13 @@ const App: React.FC = () => {
             info: isDuplicateFound ? `Ignorado: Placa ${plate} Duplicada` : `Placa: ${data.placa}` 
           } 
         }));
-
       } catch (err: any) {
         console.error("Erro no processamento do laudo:", err);
         handleError(err, selectedModel);
         const errorMsg = err?.message || 'Erro de Análise';
         setLaudoProgress(p => ({ ...p, [file.name]: { name: file.name, status: 'error', progress: 0, info: errorMsg } }));
       }
-    }));
+    }
   };
 
   const handleLaudoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
