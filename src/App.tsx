@@ -25,7 +25,7 @@ import {
   generateNoticeDocument,
   scanTemplateFields
 } from './utils/helpers';
-import { identifyTemplateFields, parseLaudoText, parseOSText, setApiKey, testModel } from './services/geminiService';
+import { identifyTemplateFields, parseLaudoText, parseOSText, setApiKey, getApiKey, testModel, listAvailableModels } from './services/geminiService';
 
 declare global {
   interface Window {
@@ -39,7 +39,6 @@ declare global {
 const INITIAL_MODELS: AIModelConfig[] = [
   { id: 'gemini-3.1-pro-preview', name: 'Gemini 3.1 Pro', description: 'Máxima Inteligência (Pago)', tier: 'High', status: 'stable', credits: 1000, maxCredits: 1000 },
   { id: 'gemini-3-flash-preview', name: 'Gemini 3 Flash', description: 'Velocidade e Precisão', tier: 'Medium', status: 'stable', credits: 2000, maxCredits: 2000 },
-  { id: 'gemini-2.5-flash-latest', name: 'Gemini 2.5 Flash', description: 'Estabilidade Corporativa', tier: 'Medium', status: 'stable', credits: 5000, maxCredits: 5000 },
   { id: 'gemini-flash-latest', name: 'Gemini Flash', description: 'Uso Geral Otimizado', tier: 'Medium', status: 'stable', credits: 5000, maxCredits: 5000 },
   { id: 'gemini-flash-lite-latest', name: 'Gemini Flash Lite', description: 'Leve e Econômico', tier: 'Low', status: 'stable', credits: 10000, maxCredits: 10000 },
 ];
@@ -257,7 +256,7 @@ const applyRule = (originalValue: any, rule: ColumnRule): any => {
   return originalValue;
 };
 
-const CreditMeter: React.FC<{ model: AIModelConfig; hasKey: boolean }> = ({ model, hasKey }) => {
+const CreditMeter: React.FC<{ model: AIModelConfig; hasKey: boolean; accountType: 'checking' | 'free' | 'pro' | 'unknown' }> = ({ model, hasKey, accountType }) => {
   const percentage = (model.credits / model.maxCredits) * 100;
   let statusColor = "bg-emerald-500 shadow-emerald-500/50";
   let textColor = "text-emerald-600";
@@ -281,8 +280,15 @@ const CreditMeter: React.FC<{ model: AIModelConfig; hasKey: boolean }> = ({ mode
     statusColor = "bg-slate-300 shadow-slate-300/50"; textColor = "text-slate-400"; dotColor = "bg-slate-400"; label = "TESTANDO...";
     tooltip = "Verificando saúde do modelo...";
   }
+
+  const accountLabel = accountType === 'pro' ? 'CONTA PRO' : (accountType === 'free' ? 'CONTA FREE' : (accountType === 'checking' ? 'VERIFICANDO...' : 'CONTA DESCONHECIDA'));
+  const accountColor = accountType === 'pro' ? 'text-blue-600' : (accountType === 'free' ? 'text-slate-500' : 'text-slate-400');
+
   return (
     <div className="flex flex-col gap-1 w-full sm:min-w-[160px] group relative" title={tooltip}>
+      <div className="flex justify-between items-center mb-0.5">
+        <span className={`text-[7px] font-black uppercase tracking-widest ${accountColor}`}>{accountLabel}</span>
+      </div>
       <div className="flex justify-between items-center">
         <div className="flex items-center gap-1.5">
           <div className={`w-2 h-2 rounded-full ${dotColor} ${model.status === 'stable' ? 'animate-pulse' : ''}`}></div>
@@ -367,7 +373,7 @@ const DEFAULT_SETTINGS: AppSettings = {
 const App: React.FC = () => {
   const [currentStep, setCurrentStep] = useState(1);
   const [availableModels, setAvailableModels] = useState<AIModelConfig[]>(INITIAL_MODELS);
-  const [selectedModel, setSelectedModel] = useState<AIModelId>('gemini-3-pro-preview');
+  const [selectedModel, setSelectedModel] = useState<AIModelId>('gemini-3.1-pro-preview');
   const [noticeFile, setNoticeFile] = useState<File | null>(null);
   const [docFields, setDocFields] = useState<DocField[]>([]);
   const [laudos, setLaudos] = useState<Laudo[]>([]);
@@ -391,8 +397,66 @@ const App: React.FC = () => {
   const [hasGeminiKey, setHasGeminiKey] = useState(false);
   const [manualKey, setManualKey] = useState<string>(() => localStorage.getItem('sg_manual_api_key') || '');
   const [isPaidAccount, setIsPaidAccount] = useState<boolean>(() => localStorage.getItem('sg_is_paid_account') === 'true');
+  const [accountTypeStatus, setAccountTypeStatus] = useState<'checking' | 'free' | 'pro' | 'unknown'>('unknown');
 
-  // Verifica se o usuário selecionou uma chave de API no AI Studio ou se há uma manual
+  const identifyAccountType = useCallback(async (key?: string) => {
+    const currentKey = key || getApiKey();
+    if (!currentKey) {
+      setAccountTypeStatus('unknown');
+      return;
+    }
+
+    setAccountTypeStatus('checking');
+    try {
+      const models = await listAvailableModels();
+      
+      if (models.length === 0) {
+        setAccountTypeStatus('unknown');
+        return;
+      }
+
+      // Se o usuário já marcou manualmente ou se detectarmos via ambiente
+      const isManualPaid = localStorage.getItem('sg_is_paid_account') === 'true';
+      
+      if (isManualPaid) {
+        setAccountTypeStatus('pro');
+        setIsPaidAccount(true);
+        
+        // Filtra os modelos para mostrar apenas os habilitados
+        const enabledModelIds = models;
+        const filtered = INITIAL_MODELS.filter(m => 
+          enabledModelIds.some(id => id.includes(m.id) || m.id.includes(id))
+        );
+        if (filtered.length > 0) {
+          setAvailableModels(filtered.map(m => ({ 
+            ...m, 
+            status: 'stable',
+            // Para conta Pro, os créditos são "reais" no sentido de que não há limite diário de 20
+            // mas o sistema ainda mostra uma barra de uso baseada em um limite alto
+            maxCredits: 10000,
+            credits: 10000 
+          })));
+        }
+      } else {
+        // Tenta detectar se é Pro testando um modelo que costuma ter limites baixos no Free
+        try {
+          const isPro = await testModel('gemini-3.1-pro-preview');
+          if (isPro) {
+            // Se o teste passou, ainda pode ser Free, mas se o usuário não marcou, 
+            // vamos manter como Free por segurança a menos que detectemos alta performance
+            setAccountTypeStatus('free'); 
+          } else {
+            setAccountTypeStatus('free');
+          }
+        } catch (e) {
+          setAccountTypeStatus('free');
+        }
+      }
+    } catch (e) {
+      setAccountTypeStatus('unknown');
+    }
+  }, []);
+
   const checkGeminiKey = useCallback(async () => {
     console.log("Checking Gemini Key... Current manualKey length:", manualKey?.length || 0);
     try {
@@ -422,6 +486,7 @@ const App: React.FC = () => {
         console.log("Gemini Key found in environment");
         setApiKey(envKey);
         setHasGeminiKey(true);
+        await identifyAccountType(envKey);
         return true;
       }
 
@@ -439,6 +504,7 @@ const App: React.FC = () => {
             console.log("Gemini Key found on server");
             setApiKey(serverKey);
             setHasGeminiKey(true);
+            await identifyAccountType(serverKey);
             return true;
           }
         }
@@ -462,12 +528,15 @@ const App: React.FC = () => {
     return false;
   }, [manualKey]);
 
-  const handleSaveManualKey = () => {
+  const handleSaveManualKey = async () => {
     if (manualKey.trim()) {
       localStorage.setItem('sg_manual_api_key', manualKey.trim());
       localStorage.setItem('sg_is_paid_account', String(isPaidAccount));
       setApiKey(manualKey.trim());
       setHasGeminiKey(true);
+      
+      // Identifica o tipo de conta
+      await identifyAccountType(manualKey.trim());
       
       // Se for conta paga, usamos os créditos do INITIAL_MODELS (que agora são altos)
       // Caso contrário, resetamos para o padrão
@@ -505,6 +574,7 @@ const App: React.FC = () => {
         await window.aistudio.openSelectKey();
         // Após abrir o seletor, assumimos sucesso e re-verificamos
         setHasGeminiKey(true);
+        await identifyAccountType();
         checkAllModels(true);
       }
     } catch (e) {
@@ -524,8 +594,25 @@ const App: React.FC = () => {
       return;
     }
 
+    // Identifica o tipo de conta antes de prosseguir
+    await identifyAccountType();
+
+    // Se for conta Pro, vamos filtrar para mostrar apenas o que está habilitado
+    let modelsToTest = [...availableModels];
+    
+    if (isPaidAccount || accountTypeStatus === 'pro') {
+      const enabledModelIds = await listAvailableModels();
+      if (enabledModelIds.length > 0) {
+        // Filtra os modelos iniciais para manter apenas os que a API diz que existem
+        // Mas mantemos os nossos IDs mapeados
+        modelsToTest = INITIAL_MODELS.filter(m => 
+          enabledModelIds.some(id => id.includes(m.id) || m.id.includes(id))
+        );
+      }
+    }
+
     // Testa os modelos
-    const testPromises = availableModels.map(async (model) => {
+    const testPromises = modelsToTest.map(async (model) => {
       try {
         // Se o modelo já estiver estável e não for um teste forçado, mantemos
         if (!force && model.status === 'stable' && model.credits > 0) return model;
@@ -758,10 +845,20 @@ const App: React.FC = () => {
   const [tempSettings, setTempSettings] = useState<AppSettings>(settings);
 
   useEffect(() => {
-    // checkAllModels() removido para evitar consumo de cota no startup
-  }, []);
+    const init = async () => {
+      const hasKey = await checkGeminiKey();
+      if (hasKey) {
+        await identifyAccountType();
+      }
+    };
+    init();
+  }, [checkGeminiKey, identifyAccountType]);
 
   const decrementCredits = useCallback((modelId: AIModelId) => {
+    // Se for conta Free, não decrementamos os créditos para não "gastar" a visualização
+    // e evitar confusão, já que o limite é do Google (20/dia)
+    if (!isPaidAccount && accountTypeStatus !== 'pro') return;
+
     setAvailableModels(prev => {
       const updated = prev.map(m => {
         if (m.id === modelId) {
@@ -1868,7 +1965,12 @@ const App: React.FC = () => {
                               <input 
                                 type="checkbox" 
                                 checked={isPaidAccount}
-                                onChange={(e) => setIsPaidAccount(e.target.checked)}
+                                onChange={(e) => {
+                                  const val = e.target.checked;
+                                  setIsPaidAccount(val);
+                                  localStorage.setItem('sg_is_paid_account', String(val));
+                                  identifyAccountType();
+                                }}
                                 className="w-4 h-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
                               />
                               <div className="flex flex-col">
@@ -2044,7 +2146,7 @@ const App: React.FC = () => {
             </div>
           </div>
           <div className="flex flex-col sm:flex-row items-center gap-4 sm:gap-8 w-full sm:w-auto">
-            {currentModel && <CreditMeter model={currentModel} hasKey={hasGeminiKey} />}
+            {currentModel && <CreditMeter model={currentModel} hasKey={hasGeminiKey} accountType={accountTypeStatus} />}
             <div className="flex flex-col items-end gap-1">
               <div className="flex items-center gap-2">
                 <select value={selectedModel} onChange={(e) => setSelectedModel(e.target.value as AIModelId)} className="bg-white border border-slate-200 rounded-xl px-3 py-1.5 text-[10px] font-black outline-none shadow-sm cursor-pointer">

@@ -2,9 +2,7 @@ export type AuctionCategory = string;
 
 export type AIModelId = 
   | 'gemini-3.1-pro-preview'
-  | 'gemini-3-pro-preview' 
   | 'gemini-3-flash-preview' 
-  | 'gemini-2.5-flash-latest'
   | 'gemini-flash-latest'
   | 'gemini-flash-lite-latest';
 

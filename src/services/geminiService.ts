@@ -42,7 +42,7 @@ export function setApiKey(key: string) {
 /**
  * Obtém a chave de API de forma dinâmica para suportar injeção em tempo de execução.
  */
-function getApiKey(): string {
+export function getApiKey(): string {
   if (manualApiKey) return manualApiKey;
 
   // @ts-ignore - process.env pode ser injetado globalmente no browser pelo AI Studio
@@ -129,7 +129,7 @@ ${rulesDescription}`,
   }
 }
 
-export async function parseLaudoText(text: string, modelId: AIModelId = 'gemini-3-pro-preview', customPrompts?: Record<string, string>, referenceDocs: ReferenceDoc[] = [], userContext?: any): Promise<any> {
+export async function parseLaudoText(text: string, modelId: AIModelId = 'gemini-3.1-pro-preview', customPrompts?: Record<string, string>, referenceDocs: ReferenceDoc[] = [], userContext?: any): Promise<any> {
   const apiKey = getApiKey();
   if (!apiKey) throw new Error("GEMINI_API_KEY not configured");
 
@@ -284,7 +284,7 @@ export async function parseLaudoText(text: string, modelId: AIModelId = 'gemini-
   }
 }
 
-export async function parseOSText(text: string, tableRules: Record<string, string>, modelId: AIModelId = 'gemini-3-pro-preview', referenceDocs: ReferenceDoc[] = [], userContext?: any): Promise<{ groups: Array<{ tipo: AuctionCategory; placas: string[]; descriptions: Record<string, string> }> }> {
+export async function parseOSText(text: string, tableRules: Record<string, string>, modelId: AIModelId = 'gemini-3.1-pro-preview', referenceDocs: ReferenceDoc[] = [], userContext?: any): Promise<{ groups: Array<{ tipo: AuctionCategory; placas: string[]; descriptions: Record<string, string> }> }> {
   const apiKey = getApiKey();
   if (!apiKey) throw new Error("GEMINI_API_KEY not configured");
 
@@ -381,6 +381,29 @@ export async function parseOSText(text: string, tableRules: Record<string, strin
   } catch (e: any) {
     console.error(`[AI] Parse OS Error: ${modelId}`, e);
     return { groups: [] };
+  }
+}
+
+/**
+ * Lista os modelos disponíveis para a chave de API configurada.
+ */
+export async function listAvailableModels(): Promise<string[]> {
+  const apiKey = getApiKey();
+  if (!apiKey) return [];
+
+  try {
+    // O SDK @google/genai não expõe listModels diretamente de forma simples em todas as versões
+    // Vamos usar um fetch direto para a API do Google para garantir compatibilidade
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`);
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error?.message || "Erro ao listar modelos");
+    }
+    const data = await response.json();
+    return data.models?.map((m: any) => m.name.replace('models/', '')) || [];
+  } catch (error) {
+    console.error("[AI] List Models Error:", error);
+    return [];
   }
 }
 
