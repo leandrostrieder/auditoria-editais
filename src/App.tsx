@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { StepIndicator } from './components/StepIndicator';
 import { 
   AuctionCategory, 
@@ -378,6 +378,7 @@ const App: React.FC = () => {
   const [outputFileName, setOutputFileName] = useState<string>(`Edital_Sincronizado_${new Date().getTime()}`);
   const [isGenerating, setIsGenerating] = useState(false);
   const [isScanningMeta, setIsScanningMeta] = useState(false);
+  const shouldStopOS = useRef(false);
   
   const [importedLaudoFiles, setImportedLaudoFiles] = useState<File[]>([]);
   const [importedOSFiles, setImportedOSFiles] = useState<File[]>([]);
@@ -939,10 +940,14 @@ const App: React.FC = () => {
     await processLaudoFiles(importedLaudoFiles);
   };
 
+  const stopOS = () => {
+    shouldStopOS.current = true;
+  };
+
   const processOSFiles = async (files: File[]) => {
     if (files.length === 0) return;
+    shouldStopOS.current = false;
     
-    // Verifica se há chave Gemini antes de processar
     const hasKey = await checkGeminiKey();
     if (!hasKey) {
       alert("⚠️ Chave Gemini não detectada! Por favor, acesse as Configurações > Acesso e vincule sua chave de faturamento para processar a Ordem de Serviço.");
@@ -952,28 +957,87 @@ const App: React.FC = () => {
     }
 
     setCurrentStep(4);
-    await Promise.all(files.map(async (file) => {
-      setOsProgress(p => ({ ...p, [file.name]: { name: file.name, progress: 10, status: 'loading' } }));
+    
+    for (const file of files) {
+      if (shouldStopOS.current) break;
+      
+      setOsProgress(p => ({ ...p, [file.name]: { name: file.name, progress: 5, status: 'loading', info: 'Iniciando...' } }));
+      
       try {
         const text = await fileToText(file);
         const promptRules: Record<string, string> = {};
         (Object.entries(settings.tableRules) as [string, TableRuleConfig][]).forEach(([k, v]) => promptRules[k] = v.prompt);
-        const { groups } = await parseOSText(text, promptRules, selectedModel, settings.referenceDocs, user);
-        decrementCredits(selectedModel);
-        const newEntries = groups.map(group => ({ 
-          id: Math.random().toString(), 
-          fileName: file.name, 
-          tipo: group.tipo, 
-          placas: group.placas,
-          descriptions: group.descriptions
-        }));
-        setOsList(prev => [...prev, ...newEntries]);
-        setOsProgress(p => ({ ...p, [file.name]: { name: file.name, progress: 100, status: 'done', info: `${groups.length} Blocos Identificados` } }));
+        
+        // Otimização: Dividir o texto em chunks para processamento incremental e mais preciso
+        const CHUNK_SIZE = 15000; 
+        const chunks: string[] = [];
+        for (let i = 0; i < text.length; i += CHUNK_SIZE) {
+          // Overlap de 1000 caracteres para não perder categorias ou placas cortadas
+          chunks.push(text.substring(i, Math.min(text.length, i + CHUNK_SIZE + 1000)));
+        }
+
+        let processedChunks = 0;
+        for (const chunk of chunks) {
+          if (shouldStopOS.current) break;
+          
+          const progress = Math.round(((processedChunks + 1) / chunks.length) * 100);
+          setOsProgress(p => ({ 
+            ...p, 
+            [file.name]: { 
+              ...p[file.name], 
+              progress, 
+              info: `Processando Parte ${processedChunks + 1}/${chunks.length}...` 
+            } 
+          }));
+
+          const { groups } = await parseOSText(chunk, promptRules, selectedModel, settings.referenceDocs, user);
+          decrementCredits(selectedModel);
+
+          if (groups.length > 0) {
+            const newEntries = groups.map(group => ({ 
+              id: Math.random().toString(), 
+              fileName: file.name, 
+              tipo: group.tipo, 
+              placas: group.placas,
+              descriptions: group.descriptions
+            }));
+            
+            // Atualiza a lista incrementalmente
+            setOsList(prev => {
+              const updated = [...prev];
+              newEntries.forEach(entry => {
+                const existingIdx = updated.findIndex(e => e.tipo === entry.tipo && e.fileName === entry.fileName);
+                if (existingIdx >= 0) {
+                  const existing = updated[existingIdx];
+                  const uniquePlacas = Array.from(new Set([...existing.placas, ...entry.placas]));
+                  updated[existingIdx] = {
+                    ...existing,
+                    placas: uniquePlacas,
+                    descriptions: { ...existing.descriptions, ...entry.descriptions }
+                  };
+                } else {
+                  updated.push(entry);
+                }
+              });
+              return updated;
+            });
+          }
+
+          processedChunks++;
+        }
+
+        if (!shouldStopOS.current) {
+          setOsProgress(p => ({ ...p, [file.name]: { name: file.name, progress: 100, status: 'done', info: `Concluído` } }));
+        } else {
+          setOsProgress(p => ({ ...p, [file.name]: { name: file.name, progress: 0, status: 'error', info: 'Interrompido' } }));
+        }
+
       } catch (err: any) {
+        console.error("Erro no processamento da OS:", err);
         handleError(err, selectedModel);
         setOsProgress(p => ({ ...p, [file.name]: { name: file.name, status: 'error', progress: 0, info: 'Erro de Extração' } }));
       }
-    }));
+    }
   };
 
   const handleOSUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1983,6 +2047,17 @@ const App: React.FC = () => {
                 >
                   <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                  </svg>
+                </button>
+              )}
+              {isOSLoading && (
+                <button 
+                  onClick={stopOS} 
+                  className="ml-2 w-6 h-6 rounded-full bg-red-50 border border-red-100 flex items-center justify-center text-red-500 hover:bg-red-100 transition-all shadow-sm"
+                  title="Interromper"
+                >
+                  <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M6 18L18 6M6 6l12 12" />
                   </svg>
                 </button>
               )}
