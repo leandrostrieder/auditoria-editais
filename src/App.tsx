@@ -25,7 +25,7 @@ import {
   generateNoticeDocument,
   scanTemplateFields
 } from './utils/helpers';
-import { parseLaudoText, parseOSText, setApiKey } from './services/geminiService';
+import { identifyTemplateFields, parseLaudoText, parseOSText, setApiKey, testModel } from './services/geminiService';
 
 declare global {
   interface Window {
@@ -479,6 +479,7 @@ const App: React.FC = () => {
       }
       
       alert(`Chave de API manual salva com sucesso! ${isPaidAccount ? 'Modo Conta Paga ativado com limites profissionais.' : 'Os créditos foram resetados visualmente.'}`);
+      checkAllModels(true);
     } else {
       localStorage.removeItem('sg_manual_api_key');
       localStorage.removeItem('sg_is_paid_account');
@@ -504,30 +505,64 @@ const App: React.FC = () => {
         await window.aistudio.openSelectKey();
         // Após abrir o seletor, assumimos sucesso e re-verificamos
         setHasGeminiKey(true);
-        checkAllModels();
+        checkAllModels(true);
       }
     } catch (e) {
       console.error("Erro ao abrir seletor de chave:", e);
     }
   };
 
-  const checkAllModels = useCallback(async () => {
+  const checkAllModels = useCallback(async (force = false) => {
     setIsCheckingModels(true);
     
     // Verifica a chave antes de testar os modelos
     const hasKey = await checkGeminiKey();
     
-    // Apenas atualiza o status baseado na presença da chave
-    setAvailableModels(prev => {
-      const current = prev.length > 0 ? prev : INITIAL_MODELS;
-      return current.map(m => ({ 
-        ...m, 
-        status: hasKey ? (m.status === 'invalid-key' ? 'stable' : m.status) : 'invalid-key' 
-      }));
+    if (!hasKey) {
+      setAvailableModels(prev => prev.map(m => ({ ...m, status: 'invalid-key', lastError: 'Chave não configurada' })));
+      setIsCheckingModels(false);
+      return;
+    }
+
+    // Testa os modelos
+    const testPromises = availableModels.map(async (model) => {
+      try {
+        // Se o modelo já estiver estável e não for um teste forçado, mantemos
+        if (!force && model.status === 'stable' && model.credits > 0) return model;
+
+        // Se for forçado ou estiver com erro, testamos de verdade
+        const success = await testModel(model.id);
+        return { 
+          ...model, 
+          status: success ? 'stable' as AIModelStatus : 'invalid-key' as AIModelStatus,
+          lastError: success ? undefined : 'O modelo não respondeu corretamente ao teste.'
+        };
+      } catch (err: any) {
+        const errorMsg = String(err?.message || "").toUpperCase();
+        let status: AIModelStatus = 'busy';
+        let lastError = err?.message;
+
+        if (errorMsg.includes("429") || errorMsg.includes("QUOTA") || errorMsg.includes("LIMIT")) {
+          status = 'no-credits';
+          lastError = "Cota excedida ou modelo desabilitado. Verifique se o faturamento está ativo no Google Cloud.";
+        } else if (errorMsg.includes("401") || errorMsg.includes("403") || errorMsg.includes("API_KEY_INVALID") || errorMsg.includes("PERMISSION_DENIED")) {
+          status = 'invalid-key';
+          lastError = "Chave de API inválida ou sem permissão para este modelo.";
+        } else if (errorMsg.includes("404") || errorMsg.includes("NOT_FOUND")) {
+          status = 'model-not-found';
+          lastError = "Modelo não habilitado ou não encontrado nesta conta.";
+        } else {
+          lastError = `Erro: ${err.message || 'Falha na conexão'}`;
+        }
+
+        return { ...model, status, lastError };
+      }
     });
-    
+
+    const results = await Promise.all(testPromises);
+    setAvailableModels(results);
     setIsCheckingModels(false);
-  }, [checkGeminiKey]);
+  }, [checkGeminiKey, availableModels]);
 
   useEffect(() => {
     // Busca usuário inicial
@@ -1868,10 +1903,33 @@ const App: React.FC = () => {
                           <div className="p-3 bg-white/50 rounded-xl border border-emerald-100">
                             <p className="text-[8px] font-bold text-emerald-800 uppercase mb-1">Dica para Ambiente Externo:</p>
                             <p className="text-[8px] text-emerald-700 leading-relaxed">
-                              Se você estiver acessando fora do AI Studio, certifique-se de configurar a variável de ambiente <code className="bg-emerald-100 px-1 rounded">GEMINI_API_KEY</code> no seu servidor de hospedagem ou use o campo manual acima.
+                              Se você estiver acessando fora do AI Studio, certifique-se de configurar a variável de ambiente <code className="bg-emerald-100 px-1 rounded">GEMINI_API_KEY</code> no seu servidor de hospedagem ou use the campo manual acima.
                             </p>
                           </div>
                         )}
+
+                        <div className="mt-4 p-4 bg-slate-50 rounded-2xl border border-slate-200">
+                          <h4 className="text-[10px] font-black text-slate-900 uppercase mb-3">Status dos Modelos Disponíveis</h4>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                            {availableModels.map(m => (
+                              <div key={m.id} className="p-3 bg-white border border-slate-100 rounded-xl flex flex-col gap-1">
+                                <div className="flex items-center justify-between">
+                                  <span className="text-[9px] font-black text-slate-800 uppercase">{m.name}</span>
+                                  <div className={`w-1.5 h-1.5 rounded-full ${m.status === 'stable' ? 'bg-emerald-500' : 'bg-red-500'}`}></div>
+                                </div>
+                                <p className="text-[8px] font-bold text-slate-400 uppercase">{m.description}</p>
+                                {m.lastError && (
+                                  <p className="text-[7px] font-medium text-red-500 leading-tight mt-1">{m.lastError}</p>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                          <div className="mt-4 p-3 bg-blue-50 border border-blue-100 rounded-xl">
+                            <p className="text-[8px] font-bold text-blue-700 uppercase leading-relaxed">
+                              💡 Se os modelos aparecerem com erro, verifique se você ativou o faturamento (Billing) no <a href="https://console.cloud.google.com/billing" target="_blank" className="underline">Google Cloud Console</a> e se a API "Generative Language API" está habilitada.
+                            </p>
+                          </div>
+                        </div>
                       </div>
                       
                       <button 
@@ -1987,30 +2045,37 @@ const App: React.FC = () => {
           </div>
           <div className="flex flex-col sm:flex-row items-center gap-4 sm:gap-8 w-full sm:w-auto">
             {currentModel && <CreditMeter model={currentModel} hasKey={hasGeminiKey} />}
-            <div className="flex items-center gap-2">
-              <select value={selectedModel} onChange={(e) => setSelectedModel(e.target.value as AIModelId)} className="bg-white border border-slate-200 rounded-xl px-3 py-1.5 text-[10px] font-black outline-none shadow-sm cursor-pointer">
-                {availableModels
-                  .map((m: AIModelConfig) => {
-                    const perc = (m.credits / m.maxCredits) * 100;
-                    const icon = m.status === 'no-credits' || m.credits === 0 ? '🔴' : (perc < 30 ? '🟠' : '🟢');
-                    const statusText = m.status === 'stable' ? 'DISPONÍVEL' : (m.status === 'no-credits' ? 'SEM SALDO' : (m.status === 'busy' ? 'OCUPADO' : (m.status === 'model-not-found' ? 'INDISPONÍVEL' : 'VERIFICAR')));
-                    return (
-                      <option key={m.id} value={m.id}>
-                        {icon} {m.name} — {m.credits} UN ({statusText})
-                      </option>
-                    );
-                  })}
-              </select>
-              <button 
-                onClick={checkAllModels} 
-                disabled={isCheckingModels}
-                className="p-2 bg-slate-100 text-slate-500 rounded-xl hover:bg-blue-50 hover:text-blue-600 transition-all shadow-sm disabled:opacity-50"
-                title="Verificar Chave de API"
-              >
-                <svg className={`w-3.5 h-3.5 ${isCheckingModels ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                </svg>
-              </button>
+            <div className="flex flex-col items-end gap-1">
+              <div className="flex items-center gap-2">
+                <select value={selectedModel} onChange={(e) => setSelectedModel(e.target.value as AIModelId)} className="bg-white border border-slate-200 rounded-xl px-3 py-1.5 text-[10px] font-black outline-none shadow-sm cursor-pointer">
+                  {availableModels
+                    .map((m: AIModelConfig) => {
+                      const perc = (m.credits / m.maxCredits) * 100;
+                      const icon = m.status === 'no-credits' || m.credits === 0 ? '🔴' : (perc < 30 ? '🟠' : '🟢');
+                      const statusText = m.status === 'stable' ? 'DISPONÍVEL' : (m.status === 'no-credits' ? 'SEM SALDO' : (m.status === 'busy' ? 'OCUPADO' : (m.status === 'model-not-found' ? 'INDISPONÍVEL' : 'VERIFICAR')));
+                      return (
+                        <option key={m.id} value={m.id}>
+                          {icon} {m.name} — {m.credits} UN ({statusText})
+                        </option>
+                      );
+                    })}
+                </select>
+                <button 
+                  onClick={() => checkAllModels(true)} 
+                  disabled={isCheckingModels}
+                  className="p-2 bg-slate-100 text-slate-500 rounded-xl hover:bg-blue-50 hover:text-blue-600 transition-all shadow-sm disabled:opacity-50"
+                  title="Verificar Chave de API"
+                >
+                  <svg className={`w-3.5 h-3.5 ${isCheckingModels ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                  </svg>
+                </button>
+              </div>
+              {currentModel?.lastError && (
+                <span className="text-[7px] font-bold text-red-500 uppercase tracking-tighter max-w-[200px] text-right">
+                  {currentModel.lastError}
+                </span>
+              )}
             </div>
             <button onClick={() => window.location.reload()} className="px-4 py-2 bg-slate-100 text-slate-500 border border-slate-200 rounded-xl text-[9px] font-black uppercase hover:bg-red-50 hover:text-red-600 transition-all">Reiniciar</button>
           </div>

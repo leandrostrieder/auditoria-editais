@@ -383,3 +383,27 @@ export async function parseOSText(text: string, tableRules: Record<string, strin
     return { groups: [] };
   }
 }
+
+/**
+ * Realiza um teste simples para verificar se a chave e o modelo estão operacionais.
+ */
+export async function testModel(modelId: AIModelId): Promise<boolean> {
+  const apiKey = getApiKey();
+  if (!apiKey) return false;
+
+  try {
+    const ai = new GoogleGenAI({ apiKey });
+    const response = await ai.models.generateContent({
+      model: modelId,
+      contents: "Responda apenas 'OK'.",
+      config: {
+        maxOutputTokens: 5,
+        temperature: 0.1
+      }
+    });
+    return !!response.text;
+  } catch (error) {
+    console.error(`[AI] Test Model Error (${modelId}):`, error);
+    throw error;
+  }
+}
