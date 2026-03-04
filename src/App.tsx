@@ -25,7 +25,7 @@ import {
   generateNoticeDocument,
   scanTemplateFields
 } from './utils/helpers';
-import { identifyTemplateFields, parseLaudoText, parseOSText, setApiKey, getApiKey, testModel, listAvailableModels } from './services/geminiService';
+import { identifyTemplateFields, parseLaudoText, parseOSText, setApiKey, getApiKey, testModel, listAvailableModels, validatePlateLocation } from './services/geminiService';
 
 declare global {
   interface Window {
@@ -35,6 +35,8 @@ declare global {
     };
   }
 }
+
+declare const pdfjsLib: any;
 
 const INITIAL_MODELS: AIModelConfig[] = [
   { id: 'gemini-3.1-pro-preview', name: 'Gemini 3.1 Pro', description: 'Máxima Inteligência (Pago)', tier: 'High', status: 'stable', credits: 1000, maxCredits: 1000 },
@@ -367,7 +369,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   },
   referenceDocs: [
     { name: "Pátios Senad", content: PATIOS_SENAD_XML, type: "Pátios SENAD" }
-  ]
+  ],
+  osExtractionMode: 'laudos_only'
 };
 
 const App: React.FC = () => {
@@ -384,6 +387,11 @@ const App: React.FC = () => {
   const [outputFileName, setOutputFileName] = useState<string>(`Edital_Sincronizado_${new Date().getTime()}`);
   const [isGenerating, setIsGenerating] = useState(false);
   const [isScanningMeta, setIsScanningMeta] = useState(false);
+  const [isOSSettingsOpen, setIsOSSettingsOpen] = useState(false);
+  const [isValidationModalOpen, setIsValidationModalOpen] = useState(false);
+  const [isValidatingPlate, setIsValidatingPlate] = useState(false);
+  const [validationResult, setValidationResult] = useState<{ plate: string; header: string; evidence: string; context: string; fullTable: string; pageNumber?: number } | null>(null);
+  const pdfCanvasRef = useRef<HTMLCanvasElement>(null);
   const shouldStopOS = useRef(false);
   
   const [importedLaudoFiles, setImportedLaudoFiles] = useState<File[]>([]);
@@ -652,55 +660,31 @@ const App: React.FC = () => {
   }, [checkGeminiKey, availableModels]);
 
   useEffect(() => {
-    // Busca usuário inicial
-    fetch('/api/auth/me')
-      .then(res => res.json())
-      .then(async data => {
+    const initAuth = async () => {
+      try {
+        const res = await fetch('/api/auth/me');
+        const data = await res.json();
         if (data.user) {
           setUser(data.user);
           setIsDisconnected(false);
         } else if (!isDisconnected) {
-          // Se não houver usuário logado e não foi desconectado manualmente, 
-          // tenta estabelecer sessão interna no servidor para liberar a chave Gemini
-          try {
-            const internalRes = await fetch('/api/auth/internal', { method: 'POST' });
-            if (internalRes.ok) {
-              const internalData = await internalRes.json();
-              setUser(internalData.user);
-            } else {
-              setUser(INTERNAL_USER);
-            }
-          } catch (e) {
-            setUser(INTERNAL_USER);
-          }
-          setIsDisconnected(false);
+          await handleUseInternalAuth();
         }
-      })
-      .catch(async err => {
+      } catch (err) {
         console.error("Error fetching user:", err);
-        if (!isDisconnected) {
-          try {
-            const internalRes = await fetch('/api/auth/internal', { method: 'POST' });
-            if (internalRes.ok) {
-              const internalData = await internalRes.json();
-              setUser(internalData.user);
-            } else {
-              setUser(INTERNAL_USER);
-            }
-          } catch (e) {
-            setUser(INTERNAL_USER);
-          }
-          setIsDisconnected(false);
-        }
-      });
+        if (!isDisconnected) await handleUseInternalAuth();
+      }
+      
+      // Após estabelecer o usuário, verifica a chave e testa os modelos
+      await checkGeminiKey();
+      await checkAllModels(true);
+    };
 
-    // Verifica chave Gemini inicial
-    checkGeminiKey();
+    initAuth();
 
     const handleMessage = (event: MessageEvent) => {
       if (event.data?.type === 'OAUTH_AUTH_SUCCESS') {
         console.log("OAuth success message received, fetching user data...");
-        // Pequeno delay para garantir processamento do cookie
         setTimeout(() => {
           fetch('/api/auth/me')
             .then(res => res.json())
@@ -1060,6 +1044,15 @@ const App: React.FC = () => {
         });
 
         const plate = normalizePlate(data.placa);
+
+        // Validação de segurança: Se a IA marcou como Ordem de Serviço mas a placa não existe em nenhuma OS carregada
+        if (data.origins?.descricaoObjeto === 'Ordem de Serviço') {
+          const plateExistsInOS = osList.some(os => os.placas.some(p => normalizePlate(p) === plate));
+          if (!plateExistsInOS) {
+            data.origins.descricaoObjeto = 'Laudo';
+          }
+        }
+
         let isDuplicateFound = false;
 
         setLaudos(prev => {
@@ -1107,6 +1100,50 @@ const App: React.FC = () => {
     shouldStopOS.current = true;
   };
 
+  const handleValidatePlate = async (plate: string, fileName: string) => {
+    setIsValidatingPlate(true);
+    setIsValidationModalOpen(true);
+    setValidationResult(null);
+    
+    try {
+      const file = importedOSFiles.find(f => f.name === fileName);
+      if (!file) throw new Error("Arquivo original não encontrado.");
+      
+      const text = await fileToText(file);
+      const result = await validatePlateLocation(plate, text, selectedModel);
+      setValidationResult({ plate, ...result });
+
+      // Se for PDF, renderiza a página no canvas
+      if (file.type === 'application/pdf' && result.pageNumber) {
+        setTimeout(async () => {
+          if (!pdfCanvasRef.current) return;
+          const arrayBuffer = await file.arrayBuffer();
+          const loadingTask = pdfjsLib.getDocument({ data: new Uint8Array(arrayBuffer) });
+          const pdf = await loadingTask.promise;
+          const page = await pdf.getPage(result.pageNumber);
+          
+          const viewport = page.getViewport({ scale: 1.5 });
+          const canvas = pdfCanvasRef.current;
+          const context = canvas.getContext('2d');
+          canvas.height = viewport.height;
+          canvas.width = viewport.width;
+
+          const renderContext = {
+            canvasContext: context,
+            viewport: viewport
+          };
+          await page.render(renderContext).promise;
+        }, 100);
+      }
+    } catch (error) {
+      console.error("Erro ao validar placa:", error);
+      alert("Erro ao validar localização da placa.");
+      setIsValidationModalOpen(false);
+    } finally {
+      setIsValidatingPlate(false);
+    }
+  };
+
   const processOSFiles = async (files: File[]) => {
     if (files.length === 0) return;
     shouldStopOS.current = false;
@@ -1131,13 +1168,17 @@ const App: React.FC = () => {
         const promptRules: Record<string, string> = {};
         (Object.entries(settings.tableRules) as [string, TableRuleConfig][]).forEach(([k, v]) => promptRules[k] = v.prompt);
         
-        // Otimização: Dividir o texto em chunks para processamento incremental e mais preciso
-        const CHUNK_SIZE = 15000; 
+        // Otimização: Dividir o texto em chunks menores para processamento incremental mais rápido
+        const CHUNK_SIZE = 8000; 
         const chunks: string[] = [];
         for (let i = 0; i < text.length; i += CHUNK_SIZE) {
-          // Overlap de 1000 caracteres para não perder categorias ou placas cortadas
-          chunks.push(text.substring(i, Math.min(text.length, i + CHUNK_SIZE + 1000)));
+          // Overlap de 1500 caracteres para não perder categorias ou placas cortadas
+          chunks.push(text.substring(i, Math.min(text.length, i + CHUNK_SIZE + 1500)));
         }
+
+        // Tenta extrair o número da OS do início do texto
+        const osNumberMatch = text.substring(0, 2000).match(/(?:ORDEM DE SERVIÇO|OS|O\.S\.)\s*(?:Nº|N|#)?\s*([\d./-]+)/i);
+        const extractedOSNumber = osNumberMatch ? osNumberMatch[1] : undefined;
 
         let processedChunks = 0;
         for (const chunk of chunks) {
@@ -1153,7 +1194,21 @@ const App: React.FC = () => {
             } 
           }));
 
-          const { groups } = await parseOSText(chunk, promptRules, selectedModel, settings.referenceDocs, user);
+          // Se o modo for apenas laudos, passa a lista de placas para o Gemini filtrar
+          const platesToFilter = settings.osExtractionMode === 'laudos_only' 
+            ? laudos.map(l => l.data.placa) 
+            : undefined;
+
+          // OTIMIZAÇÃO CRÍTICA: Se estivermos filtrando por laudos, pula o chunk se nenhuma placa alvo estiver nele
+          if (platesToFilter && platesToFilter.length > 0) {
+            const hasAnyPlate = platesToFilter.some(p => chunk.toUpperCase().includes(p.toUpperCase()));
+            if (!hasAnyPlate) {
+              processedChunks++;
+              continue;
+            }
+          }
+
+          const { groups } = await parseOSText(chunk, promptRules, selectedModel, settings.referenceDocs, user, platesToFilter);
           decrementCredits(selectedModel);
 
           if (groups.length > 0) {
@@ -1161,25 +1216,39 @@ const App: React.FC = () => {
               id: Math.random().toString(), 
               fileName: file.name, 
               tipo: group.tipo, 
-              placas: group.placas,
-              descriptions: group.descriptions
+              placas: group.items.map((i: any) => i.placa),
+              descriptions: group.items.reduce((acc: any, i: any) => ({ ...acc, [i.placa]: i.descricao }), {}),
+              osNumber: group.osNumber
             }));
             
             // Atualiza a lista incrementalmente
             setOsList(prev => {
               const updated = [...prev];
               newEntries.forEach(entry => {
+                // Remove placas que já foram encontradas em OUTRAS categorias para evitar duplicidade
+                const filteredPlacas = entry.placas.filter(p => {
+                  const alreadyExistsInOtherCategory = updated.some(e => 
+                    e.fileName === entry.fileName && 
+                    e.tipo !== entry.tipo && 
+                    e.placas.includes(p)
+                  );
+                  return !alreadyExistsInOtherCategory;
+                });
+
+                if (filteredPlacas.length === 0) return;
+
                 const existingIdx = updated.findIndex(e => e.tipo === entry.tipo && e.fileName === entry.fileName);
                 if (existingIdx >= 0) {
                   const existing = updated[existingIdx];
-                  const uniquePlacas = Array.from(new Set([...existing.placas, ...entry.placas]));
+                  const uniquePlacas = Array.from(new Set([...existing.placas, ...filteredPlacas]));
                   updated[existingIdx] = {
                     ...existing,
                     placas: uniquePlacas,
-                    descriptions: { ...existing.descriptions, ...entry.descriptions }
+                    descriptions: { ...existing.descriptions, ...entry.descriptions },
+                    osNumber: entry.osNumber || existing.osNumber
                   };
                 } else {
-                  updated.push(entry);
+                  updated.push({ ...entry, placas: filteredPlacas });
                 }
               });
               return updated;
@@ -1891,193 +1960,181 @@ const App: React.FC = () => {
                     </div>
                   </div>
 
-                  {user ? (
-                    <div className="space-y-4">
-                      <div className={`border rounded-3xl p-6 shadow-sm flex items-center justify-between ${user.isInternal ? 'bg-orange-50 border-orange-100' : 'bg-white border-slate-200'}`}>
-                        <div className="flex items-center gap-4">
-                          {user.picture ? (
-                            <img src={user.picture} alt={user.name} className={`w-12 h-12 rounded-full border-2 ${user.isInternal ? 'border-orange-400' : 'border-emerald-500'}`} referrerPolicy="no-referrer" />
-                          ) : (
-                            <div className={`w-12 h-12 rounded-full flex items-center justify-center text-white font-black text-lg ${user.isInternal ? 'bg-orange-600' : 'bg-emerald-600'}`}>
-                              {user.name?.charAt(0)}
-                            </div>
-                          )}
-                          <div>
-                            <p className="text-xs font-black text-slate-900 uppercase">{user.isInternal ? 'Conexão Automática' : 'Conta em Uso'}</p>
-                            <p className="text-[10px] font-bold text-slate-700">{user.name}</p>
-                            <p className="text-[9px] font-medium text-slate-400">{user.email}</p>
+                  {user && (
+                    <div className={`border rounded-3xl p-6 shadow-sm flex items-center justify-between ${user.isInternal ? 'bg-orange-50 border-orange-100' : 'bg-white border-slate-200'}`}>
+                      <div className="flex items-center gap-4">
+                        {user.picture ? (
+                          <img src={user.picture} alt={user.name} className={`w-12 h-12 rounded-full border-2 ${user.isInternal ? 'border-orange-400' : 'border-emerald-500'}`} referrerPolicy="no-referrer" />
+                        ) : (
+                          <div className={`w-12 h-12 rounded-full flex items-center justify-center text-white font-black text-lg ${user.isInternal ? 'bg-orange-600' : 'bg-emerald-600'}`}>
+                            {user.name?.charAt(0)}
                           </div>
+                        )}
+                        <div>
+                          <p className="text-xs font-black text-slate-900 uppercase">{user.isInternal ? 'Conexão Automática' : 'Conta em Uso'}</p>
+                          <p className="text-[10px] font-bold text-slate-700">{user.name}</p>
+                          <p className="text-[9px] font-medium text-slate-400">{user.email}</p>
                         </div>
-                        <button 
-                          onClick={handleLogout}
-                          className="px-4 py-2 bg-red-50 text-red-600 border border-red-100 rounded-xl text-[9px] font-black uppercase hover:bg-red-100 transition-all"
-                        >
-                          Sair
-                        </button>
                       </div>
+                      <button 
+                        onClick={handleLogout}
+                        className="px-4 py-2 bg-red-50 text-red-600 border border-red-100 rounded-xl text-[9px] font-black uppercase hover:bg-red-100 transition-all"
+                      >
+                        Sair
+                      </button>
+                    </div>
+                  )}
 
-                      <div className="bg-emerald-50 border border-emerald-100 rounded-3xl p-6 flex flex-col gap-4">
-                        <div className="flex items-center justify-between">
-                          <div className="flex items-center gap-4">
-                            <div className={`w-12 h-12 rounded-2xl flex items-center justify-center text-white font-black text-xs ${hasGeminiKey ? 'bg-emerald-600' : 'bg-orange-500'}`}>
-                              {hasGeminiKey ? 'API' : '!'}
-                            </div>
-                            <div>
-                              <p className="text-xs font-black text-slate-900 uppercase">Chave Gemini (Faturamento)</p>
-                              <p className="text-[9px] font-medium text-slate-500 uppercase tracking-tight">
-                                {hasGeminiKey ? 'Chave de API Vinculada e Ativa' : 'Necessário vincular chave para créditos'}
-                              </p>
-                            </div>
-                          </div>
+                  <div className="bg-emerald-50 border border-emerald-100 rounded-3xl p-6 flex flex-col gap-4">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-4">
+                        <div className={`w-12 h-12 rounded-2xl flex items-center justify-center text-white font-black text-xs ${hasGeminiKey ? 'bg-emerald-600' : 'bg-orange-500'}`}>
+                          {hasGeminiKey ? 'API' : '!'}
+                        </div>
+                        <div>
+                          <p className="text-xs font-black text-slate-900 uppercase">Chave Gemini (Faturamento)</p>
+                          <p className="text-[9px] font-medium text-slate-500 uppercase tracking-tight">
+                            {hasGeminiKey ? 'Chave de API Vinculada e Ativa' : 'Necessário vincular chave para créditos'}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="flex gap-2">
+                        {window.aistudio && (
+                          <button 
+                            onClick={handleSelectGeminiKey}
+                            className={`px-4 py-2 rounded-xl text-[9px] font-black uppercase transition-all border ${hasGeminiKey ? 'bg-white text-emerald-600 border-emerald-200 hover:bg-emerald-50' : 'bg-orange-600 text-white border-orange-500 hover:bg-orange-700'}`}
+                          >
+                            {hasGeminiKey ? 'Alterar Chave' : 'Vincular Chave'}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="space-y-3 p-4 bg-white rounded-2xl border border-emerald-100">
+                        <div className="flex flex-col gap-1">
+                          <label className="text-[8px] font-black text-slate-400 uppercase">Configuração Manual (Ambiente Externo)</label>
                           <div className="flex gap-2">
-                            {window.aistudio && (
-                              <button 
-                                onClick={handleSelectGeminiKey}
-                                className={`px-4 py-2 rounded-xl text-[9px] font-black uppercase transition-all border ${hasGeminiKey ? 'bg-white text-emerald-600 border-emerald-200 hover:bg-emerald-50' : 'bg-orange-600 text-white border-orange-500 hover:bg-orange-700'}`}
-                              >
-                                {hasGeminiKey ? 'Alterar Chave' : 'Vincular Chave'}
-                              </button>
-                            )}
-                          </div>
-                        </div>
-
-                        <div className="space-y-3 p-4 bg-white rounded-2xl border border-emerald-100">
-                            <div className="flex flex-col gap-1">
-                              <label className="text-[8px] font-black text-slate-400 uppercase">Configuração Manual (Ambiente Externo)</label>
-                              <div className="flex gap-2">
-                                <input 
-                                  type="password" 
-                                  value={manualKey}
-                                  onChange={(e) => setManualKey(e.target.value)}
-                                  placeholder="Insira sua GEMINI_API_KEY..."
-                                  className="flex-1 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-[10px] font-mono outline-none focus:ring-1 focus:ring-emerald-500"
-                                />
-                                <button 
-                                  onClick={handleSaveManualKey}
-                                  className="px-4 py-2 bg-emerald-600 text-white rounded-xl text-[9px] font-black uppercase hover:bg-emerald-700 transition-all"
-                                >
-                                  Salvar
-                                </button>
-                              </div>
-                            </div>
-                            
-                            <label className="flex items-center gap-3 p-3 bg-slate-50 rounded-xl border border-slate-200 cursor-pointer group hover:bg-white transition-all">
-                              <input 
-                                type="checkbox" 
-                                checked={isPaidAccount}
-                                onChange={(e) => {
-                                  const val = e.target.checked;
-                                  setIsPaidAccount(val);
-                                  localStorage.setItem('sg_is_paid_account', String(val));
-                                  identifyAccountType();
-                                }}
-                                className="w-4 h-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
-                              />
-                              <div className="flex flex-col">
-                                <span className="text-[9px] font-black text-slate-700 uppercase group-hover:text-emerald-600 transition-colors">Conta com Faturamento Ativo (Pago)</span>
-                                <span className="text-[7px] text-slate-400 font-medium leading-tight mt-0.5">Habilite se sua chave for de um projeto com faturamento (Pay-as-you-go). Isso ajustará os limites de créditos exibidos no sistema para refletir a cota profissional.</span>
-                              </div>
-                            </label>
-
-                            {!isPaidAccount && (
-                              <div className="p-3 bg-orange-50 rounded-xl border border-orange-100">
-                                <p className="text-[8px] font-black text-orange-800 uppercase mb-1">Aviso de Cota (Free Tier):</p>
-                                <p className="text-[7px] text-orange-700 leading-relaxed">
-                                  O Google limita contas gratuitas a <strong>20 requisições por dia</strong> em alguns modelos (como o Flash Lite). 
-                                  Se você atingir esse limite, o sistema mostrará "SEM CRÉDITOS" até que a cota seja renovada pelo Google. 
-                                </p>
-                              </div>
-                            )}
-                          <div className="flex flex-col gap-2">
+                            <input 
+                              type="password" 
+                              value={manualKey}
+                              onChange={(e) => setManualKey(e.target.value)}
+                              placeholder="Insira sua GEMINI_API_KEY..."
+                              className="flex-1 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-[10px] font-mono outline-none focus:ring-1 focus:ring-emerald-500"
+                            />
                             <button 
-                              onClick={handleResetCredits}
-                              className="px-4 py-2 bg-slate-100 text-slate-600 rounded-xl text-[9px] font-black uppercase hover:bg-slate-200 transition-all border border-slate-200"
+                              onClick={handleSaveManualKey}
+                              className="px-4 py-2 bg-emerald-600 text-white rounded-xl text-[9px] font-black uppercase hover:bg-emerald-700 transition-all"
                             >
-                              Resetar Cache de Créditos
+                              Salvar
                             </button>
-                            <p className="text-[7px] text-slate-400 font-medium leading-relaxed">
-                              Obtenha uma chave gratuita em <a href="https://aistudio.google.com/app/apikey" target="_blank" className="text-blue-500 underline">Google AI Studio</a>.
-                            </p>
                           </div>
                         </div>
+                        
+                        <label className="flex items-center gap-3 p-3 bg-slate-50 rounded-xl border border-slate-200 cursor-pointer group hover:bg-white transition-all">
+                          <input 
+                            type="checkbox" 
+                            checked={isPaidAccount}
+                            onChange={(e) => {
+                              const val = e.target.checked;
+                              setIsPaidAccount(val);
+                              localStorage.setItem('sg_is_paid_account', String(val));
+                              identifyAccountType();
+                            }}
+                            className="w-4 h-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+                          />
+                          <div className="flex flex-col">
+                            <span className="text-[9px] font-black text-slate-700 uppercase group-hover:text-emerald-600 transition-colors">Conta com Faturamento Ativo (Pago)</span>
+                            <span className="text-[7px] text-slate-400 font-medium leading-tight mt-0.5">Habilite se sua chave for de um projeto com faturamento (Pay-as-you-go). Isso ajustará os limites de créditos exibidos no sistema para refletir a cota profissional.</span>
+                          </div>
+                        </label>
 
-                        {!hasGeminiKey && (
-                          <div className="p-3 bg-white/50 rounded-xl border border-emerald-100">
-                            <p className="text-[8px] font-bold text-emerald-800 uppercase mb-1">Dica para Ambiente Externo:</p>
-                            <p className="text-[8px] text-emerald-700 leading-relaxed">
-                              Se você estiver acessando fora do AI Studio, certifique-se de configurar a variável de ambiente <code className="bg-emerald-100 px-1 rounded">GEMINI_API_KEY</code> no seu servidor de hospedagem ou use the campo manual acima.
+                        {!isPaidAccount && (
+                          <div className="p-3 bg-orange-50 rounded-xl border border-orange-100">
+                            <p className="text-[8px] font-black text-orange-800 uppercase mb-1">Aviso de Cota (Free Tier):</p>
+                            <p className="text-[7px] text-orange-700 leading-relaxed">
+                              O Google limita contas gratuitas a <strong>20 requisições por dia</strong> em alguns modelos (como o Flash Lite). 
+                              Se você atingir esse limite, o sistema mostrará "SEM CRÉDITOS" até que a cota seja renovada pelo Google. 
                             </p>
                           </div>
                         )}
-
-                        <div className="mt-4 p-4 bg-slate-50 rounded-2xl border border-slate-200">
-                          <h4 className="text-[10px] font-black text-slate-900 uppercase mb-3">Status dos Modelos Disponíveis</h4>
-                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                            {availableModels.map(m => (
-                              <div key={m.id} className="p-3 bg-white border border-slate-100 rounded-xl flex flex-col gap-1">
-                                <div className="flex items-center justify-between">
-                                  <span className="text-[9px] font-black text-slate-800 uppercase">{m.name}</span>
-                                  <div className={`w-1.5 h-1.5 rounded-full ${m.status === 'stable' ? 'bg-emerald-500' : 'bg-red-500'}`}></div>
-                                </div>
-                                <p className="text-[8px] font-bold text-slate-400 uppercase">{m.description}</p>
-                                {m.lastError && (
-                                  <p className="text-[7px] font-medium text-red-500 leading-tight mt-1">{m.lastError}</p>
-                                )}
-                              </div>
-                            ))}
-                          </div>
-                          <div className="mt-4 p-3 bg-blue-50 border border-blue-100 rounded-xl">
-                            <p className="text-[8px] font-bold text-blue-700 uppercase leading-relaxed">
-                              💡 Se os modelos aparecerem com erro, verifique se você ativou o faturamento (Billing) no <a href="https://console.cloud.google.com/billing" target="_blank" className="underline">Google Cloud Console</a> e se a API "Generative Language API" está habilitada.
-                            </p>
-                          </div>
-                        </div>
-                      </div>
-                      
-                      <button 
-                        onClick={() => handleGoogleLogin(true)}
-                        className="w-full py-4 bg-slate-50 border border-slate-200 rounded-2xl flex items-center justify-center gap-3 group hover:bg-blue-50 hover:border-blue-200 transition-all"
-                      >
-                        <svg className="w-4 h-4 text-slate-400 group-hover:text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
-                        </svg>
-                        <span className="text-[10px] font-black text-slate-600 uppercase group-hover:text-blue-600">{user.isInternal ? 'Entrar com Conta Google' : 'Trocar de Conta Google'}</span>
-                      </button>
-
-                      {!user.isInternal && (
+                      <div className="flex flex-col gap-2">
                         <button 
-                          onClick={handleUseInternalAuth}
-                          className="w-full py-4 bg-orange-50 border border-orange-100 rounded-2xl flex items-center justify-center gap-3 group hover:bg-orange-100 hover:border-orange-200 transition-all"
+                          onClick={handleResetCredits}
+                          className="px-4 py-2 bg-slate-100 text-slate-600 rounded-xl text-[9px] font-black uppercase hover:bg-slate-200 transition-all border border-slate-200"
                         >
-                          <svg className="w-4 h-4 text-orange-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-                          </svg>
-                          <span className="text-[10px] font-black text-orange-600 uppercase">Usar Autenticação Padrão (Interna)</span>
+                          Resetar Cache de Créditos
                         </button>
-                      )}
-                    </div>
-                  ) : (
-                    <div className="flex flex-col items-center justify-center py-12 bg-slate-50 rounded-3xl border-2 border-dashed border-slate-200">
-                      <div className="w-16 h-16 bg-white rounded-2xl shadow-sm flex items-center justify-center mb-4">
-                        <svg className="w-8 h-8" viewBox="0 0 24 24">
-                          <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
-                          <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
-                          <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z"/>
-                          <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>
-                        </svg>
+                        <p className="text-[7px] text-slate-400 font-medium leading-relaxed">
+                          Obtenha uma chave gratuita em <a href="https://aistudio.google.com/app/apikey" target="_blank" className="text-blue-500 underline">Google AI Studio</a>.
+                        </p>
                       </div>
-                      <h4 className="text-[10px] font-black text-slate-900 uppercase mb-2">Conta não vinculada</h4>
-                      <p className="text-[9px] text-slate-400 font-bold uppercase mb-6">Autentique-se para habilitar a referência IA</p>
-                      <button 
-                        onClick={() => handleGoogleLogin(true)}
-                        className="px-8 py-4 bg-white border border-slate-200 rounded-2xl shadow-sm hover:shadow-md hover:border-blue-200 transition-all flex items-center gap-3 group"
-                      >
-                        <span className="text-[10px] font-black text-slate-700 uppercase group-hover:text-blue-600">Conectar com Google</span>
-                        <svg className="w-4 h-4 text-slate-400 group-hover:text-blue-600 transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M14 5l7 7m0 0l-7 7m7-7H3" />
-                        </svg>
-                      </button>
                     </div>
+
+                    {!hasGeminiKey && (
+                      <div className="p-3 bg-white/50 rounded-xl border border-emerald-100">
+                        <p className="text-[8px] font-bold text-emerald-800 uppercase mb-1">Dica para Ambiente Externo:</p>
+                        <p className="text-[8px] text-emerald-700 leading-relaxed">
+                          Se você estiver acessando fora do AI Studio, certifique-se de configurar a variável de ambiente <code className="bg-emerald-100 px-1 rounded">GEMINI_API_KEY</code> no seu servidor de hospedagem ou use the campo manual acima.
+                        </p>
+                      </div>
+                    )}
+
+                    <div className="mt-4 p-4 bg-slate-50 rounded-2xl border border-slate-200">
+                      <h4 className="text-[10px] font-black text-slate-900 uppercase mb-3">Status dos Modelos Disponíveis</h4>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        {availableModels.map(m => (
+                          <div key={m.id} className="p-3 bg-white border border-slate-100 rounded-xl flex flex-col gap-1">
+                            <div className="flex items-center justify-between">
+                              <span className="text-[9px] font-black text-slate-800 uppercase">{m.name}</span>
+                              <div className={`w-1.5 h-1.5 rounded-full ${m.status === 'stable' ? 'bg-emerald-500' : 'bg-red-500'}`}></div>
+                            </div>
+                            <p className="text-[8px] font-bold text-slate-400 uppercase">{m.description}</p>
+                            {m.lastError && (
+                              <p className="text-[7px] font-medium text-red-500 leading-tight mt-1">{m.lastError}</p>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                      <div className="mt-4 p-3 bg-blue-50 border border-blue-100 rounded-xl">
+                        <p className="text-[8px] font-bold text-blue-700 uppercase leading-relaxed">
+                          💡 Se os modelos aparecerem com erro, verifique se você ativou o faturamento (Billing) no <a href="https://console.cloud.google.com/billing" target="_blank" className="underline">Google Cloud Console</a> e se a API "Generative Language API" está habilitada.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
+                  {(!user || user.isInternal) ? (
+                    <button 
+                      onClick={() => handleGoogleLogin(true)}
+                      className="w-full py-4 bg-slate-50 border border-slate-200 rounded-2xl flex items-center justify-center gap-3 group hover:bg-blue-50 hover:border-blue-200 transition-all"
+                    >
+                      <svg className="w-4 h-4 text-slate-400 group-hover:text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
+                      </svg>
+                      <span className="text-[10px] font-black text-slate-600 uppercase group-hover:text-blue-600">Entrar com Conta Google</span>
+                    </button>
+                  ) : (
+                    <button 
+                      onClick={() => handleGoogleLogin(true)}
+                      className="w-full py-4 bg-slate-50 border border-slate-200 rounded-2xl flex items-center justify-center gap-3 group hover:bg-blue-50 hover:border-blue-200 transition-all"
+                    >
+                      <svg className="w-4 h-4 text-slate-400 group-hover:text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
+                      </svg>
+                      <span className="text-[10px] font-black text-slate-600 uppercase group-hover:text-blue-600">Trocar de Conta Google</span>
+                    </button>
+                  )}
+
+                  {(user && !user.isInternal) && (
+                    <button 
+                      onClick={handleUseInternalAuth}
+                      className="w-full py-4 bg-orange-50 border border-orange-100 rounded-2xl flex items-center justify-center gap-3 group hover:bg-orange-100 hover:border-orange-200 transition-all"
+                    >
+                      <svg className="w-4 h-4 text-orange-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                      </svg>
+                      <span className="text-[10px] font-black text-orange-600 uppercase">Usar Autenticação Padrão (Interna)</span>
+                    </button>
                   )}
 
                   <div className="bg-slate-900 p-6 rounded-3xl">
@@ -2112,6 +2169,196 @@ const App: React.FC = () => {
                 className="px-8 bg-slate-100 hover:bg-slate-200 text-slate-500 font-black text-[10px] uppercase py-4 rounded-2xl transition-all"
               >
                 Cancelar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal de Configurações de OS */}
+      {isOSSettingsOpen && (
+        <div className="fixed inset-0 z-[150] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-300">
+          <div className="bg-white w-full max-w-md rounded-[2rem] shadow-2xl overflow-hidden animate-in zoom-in-95 duration-300">
+            <div className="p-8 border-b border-slate-100 bg-slate-50/50">
+              <div className="flex items-center gap-4 mb-2">
+                <div className="w-10 h-10 bg-blue-600 rounded-2xl flex items-center justify-center text-white shadow-lg shadow-blue-200">
+                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                  </svg>
+                </div>
+                <div>
+                  <h2 className="text-lg font-black text-slate-900 uppercase tracking-tight">Configurações de OS</h2>
+                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Extração e Sincronização</p>
+                </div>
+              </div>
+            </div>
+
+            <div className="p-8 space-y-6">
+              <div className="space-y-4">
+                <label className="flex items-start gap-4 p-4 rounded-2xl border-2 cursor-pointer transition-all hover:bg-slate-50 group border-slate-100">
+                  <div className="mt-1">
+                    <input 
+                      type="radio" 
+                      name="osMode" 
+                      checked={settings.osExtractionMode === 'all'} 
+                      onChange={() => setSettings(prev => ({ ...prev, osExtractionMode: 'all' }))}
+                      className="w-4 h-4 text-blue-600 border-slate-300 focus:ring-blue-500"
+                    />
+                  </div>
+                  <div className="flex-1">
+                    <span className="block text-[11px] font-black text-slate-900 uppercase mb-1 group-hover:text-blue-600 transition-colors">Coletar todas as placas das Ordens de Serviço</span>
+                    <span className="block text-[9px] font-bold text-slate-400 leading-relaxed uppercase">Processo completo: identifica todas as placas na OS e vincula as correspondentes aos laudos.</span>
+                  </div>
+                </label>
+
+                <label className="flex items-start gap-4 p-4 rounded-2xl border-2 cursor-pointer transition-all hover:bg-slate-50 group border-slate-100">
+                  <div className="mt-1">
+                    <input 
+                      type="radio" 
+                      name="osMode" 
+                      checked={settings.osExtractionMode === 'laudos_only'} 
+                      onChange={() => setSettings(prev => ({ ...prev, osExtractionMode: 'laudos_only' }))}
+                      className="w-4 h-4 text-blue-600 border-slate-300 focus:ring-blue-500"
+                    />
+                  </div>
+                  <div className="flex-1">
+                    <span className="block text-[11px] font-black text-slate-900 uppercase mb-1 group-hover:text-blue-600 transition-colors">Coletar apenas as placas dos Laudos</span>
+                    <span className="block text-[9px] font-bold text-slate-400 leading-relaxed uppercase">Processo otimizado: busca exclusivamente as placas dos laudos carregados dentro das Ordens de Serviço.</span>
+                  </div>
+                </label>
+              </div>
+
+              <div className="p-4 bg-blue-50 rounded-2xl border border-blue-100">
+                <p className="text-[9px] font-bold text-blue-700 uppercase leading-relaxed">
+                  💡 A opção "Apenas Laudos" torna a pesquisa significativamente mais rápida ao focar apenas nos veículos de interesse.
+                </p>
+              </div>
+            </div>
+
+            <div className="p-8 bg-slate-50 border-t border-slate-100">
+              <button 
+                onClick={() => setIsOSSettingsOpen(false)}
+                className="w-full py-4 bg-slate-900 text-white rounded-2xl font-black text-[10px] uppercase tracking-widest hover:bg-slate-800 transition-all shadow-lg shadow-slate-200"
+              >
+                Confirmar Configurações
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal de Validação de Placa (Acrobat) */}
+      {isValidationModalOpen && (
+        <div className="fixed inset-0 z-[200] flex items-center justify-center p-4 bg-slate-900/80 backdrop-blur-md animate-in fade-in duration-300">
+          <div className="bg-white w-full max-w-2xl rounded-[2.5rem] shadow-2xl overflow-hidden animate-in zoom-in-95 duration-300 flex flex-col max-h-[90vh]">
+            <div className="p-8 border-b border-slate-100 bg-slate-50/80 flex items-center justify-between">
+              <div className="flex items-center gap-4">
+                <div className="w-12 h-12 bg-red-600 rounded-2xl flex items-center justify-center text-white shadow-xl shadow-red-100">
+                  <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                  </svg>
+                </div>
+                <div>
+                  <h2 className="text-xl font-black text-slate-900 uppercase tracking-tight">Validação de Localização</h2>
+                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Prova Documental (Acrobat Engine)</p>
+                </div>
+              </div>
+              <button 
+                onClick={() => setIsValidationModalOpen(false)}
+                className="w-10 h-10 rounded-full bg-white border border-slate-200 flex items-center justify-center text-slate-400 hover:bg-red-50 hover:text-red-500 transition-all"
+              >
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-8 custom-scrollbar">
+              {isValidatingPlate ? (
+                <div className="flex flex-col items-center justify-center py-20">
+                  <div className="w-16 h-16 border-4 border-red-100 border-t-red-600 rounded-full animate-spin mb-6" />
+                  <p className="text-[11px] font-black text-slate-900 uppercase animate-pulse">Escaneando documento original...</p>
+                  <p className="text-[9px] font-bold text-slate-400 uppercase mt-2">Localizando coordenadas da placa</p>
+                </div>
+              ) : validationResult ? (
+                <div className="space-y-8">
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100">
+                      <span className="block text-[8px] font-black text-slate-400 uppercase mb-1">Placa Alvo</span>
+                      <span className="text-lg font-black text-slate-900">{validationResult.plate}</span>
+                    </div>
+                    <div className="p-4 bg-red-50 rounded-2xl border border-red-100">
+                      <span className="block text-[8px] font-black text-red-400 uppercase mb-1">Seção Identificada</span>
+                      <span className="text-[11px] font-black text-red-700 uppercase leading-tight">{validationResult.header}</span>
+                    </div>
+                  </div>
+
+                  <div className="space-y-3">
+                    <h4 className="text-[10px] font-black text-slate-900 uppercase tracking-widest flex items-center gap-2">
+                      <span className="w-1.5 h-4 bg-red-600 rounded-full" />
+                      Captura do Documento Original (Página {validationResult.pageNumber})
+                    </h4>
+                    <div className="relative bg-slate-100 rounded-3xl border-4 border-slate-200 overflow-hidden shadow-inner min-h-[400px] flex items-center justify-center">
+                      <canvas ref={pdfCanvasRef} className="max-w-full h-auto shadow-2xl" />
+                      {!validationResult.pageNumber && (
+                        <div className="text-center p-10">
+                          <p className="text-[10px] font-black text-slate-400 uppercase">Visualização não disponível para este formato</p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="space-y-3">
+                    <h4 className="text-[10px] font-black text-slate-900 uppercase tracking-widest flex items-center gap-2">
+                      <span className="w-1.5 h-4 bg-emerald-600 rounded-full" />
+                      Reconstrução Técnica da Tabela
+                    </h4>
+                    <div className="p-6 bg-slate-900 rounded-3xl font-mono text-[10px] text-slate-300 border-4 border-slate-800 shadow-inner overflow-x-auto whitespace-pre custom-scrollbar">
+                      {validationResult.fullTable.split('\n').map((line, i) => {
+                        const isTarget = line.toUpperCase().includes(validationResult.plate.toUpperCase());
+                        return (
+                          <div 
+                            key={i} 
+                            className={`${isTarget ? 'bg-emerald-500/20 text-emerald-400 font-black border-l-4 border-emerald-500 -ml-6 pl-5 py-1' : ''}`}
+                          >
+                            {line}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div className="space-y-3">
+                    <h4 className="text-[10px] font-black text-slate-900 uppercase tracking-widest flex items-center gap-2">
+                      <span className="w-1.5 h-4 bg-slate-400 rounded-full" />
+                      Contexto do Documento
+                    </h4>
+                    <div className="p-6 bg-slate-50 rounded-3xl border-2 border-dashed border-slate-200 text-[10px] text-slate-600 leading-relaxed italic">
+                      "... {validationResult.context} ..."
+                    </div>
+                  </div>
+
+                  <div className="p-4 bg-emerald-50 rounded-2xl border border-emerald-100 flex items-center gap-4">
+                    <div className="w-8 h-8 bg-emerald-500 rounded-full flex items-center justify-center text-white">
+                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                      </svg>
+                    </div>
+                    <p className="text-[9px] font-bold text-emerald-700 uppercase">Localização confirmada com 100% de precisão no documento original.</p>
+                  </div>
+                </div>
+              ) : (
+                <div className="text-center py-20 text-slate-400 uppercase font-black text-[10px]">Nenhum dado de validação disponível</div>
+              )}
+            </div>
+
+            <div className="p-8 bg-slate-50 border-t border-slate-100">
+              <button 
+                onClick={() => setIsValidationModalOpen(false)}
+                className="w-full py-4 bg-slate-900 text-white rounded-2xl font-black text-[10px] uppercase tracking-widest hover:bg-slate-800 transition-all shadow-lg shadow-slate-200"
+              >
+                Fechar Visualização
               </button>
             </div>
           </div>
@@ -2240,7 +2487,13 @@ const App: React.FC = () => {
           <div className={`bg-white p-5 rounded-3xl border-2 transition-all shadow-xl flex flex-col h-full ${currentStep === 3 ? 'border-blue-500 ring-4 ring-blue-50' : 'border-slate-100'}`}>
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-3">
-                <span className="w-6 h-6 rounded-lg bg-blue-100 flex items-center justify-center text-blue-600 font-black">03</span> 
+                <span 
+                  onClick={() => setIsOSSettingsOpen(true)}
+                  className="w-6 h-6 rounded-lg bg-blue-100 flex items-center justify-center text-blue-600 font-black cursor-pointer hover:bg-blue-200 transition-all"
+                  title="Configurações de Extração de OS"
+                >
+                  03
+                </span> 
                 Ordens de Serviço
               </h3>
               {/* Barra de Progresso */}
@@ -2276,15 +2529,70 @@ const App: React.FC = () => {
               )}
             </div>
             <div className="flex-1 overflow-y-auto custom-scrollbar mb-3 space-y-2 max-h-64">
-              {osList.map(os => (
-                <div key={os.id} className="bg-slate-50 p-2 rounded-lg border border-slate-100">
-                  <span className="text-[7px] font-black text-blue-600 uppercase mb-1 block">{os.tipo}</span>
-                  <div className="flex flex-wrap gap-1">{os.placas.map(p => {
-                    const found = laudos.some(l => normalizePlate(l.data.placa) === normalizePlate(p));
-                    return <span key={p} className={`px-1.5 py-0.5 rounded text-[7px] font-black border ${found ? 'bg-emerald-50 text-emerald-600 border-emerald-200' : 'bg-red-50 text-red-600 border-red-200'}`}>{p}</span>;
-                  })}</div>
-                </div>
-              ))}
+              {osList.map(os => {
+                // Filtra as placas visualmente se o modo for apenas laudos
+                const displayPlacas = settings.osExtractionMode === 'laudos_only'
+                  ? os.placas.filter(p => laudos.some(l => normalizePlate(l.data.placa) === normalizePlate(p)))
+                  : os.placas;
+
+                // Se não houver placas para exibir neste modo, oculta o quadrante
+                if (displayPlacas.length === 0 && settings.osExtractionMode === 'laudos_only') return null;
+
+                // Calcula o progresso individual baseado no progresso do arquivo correspondente
+                const fileProg = osProgress[os.fileName];
+                const itemProgress = fileProg ? fileProg.progress : 0;
+                const isDone = fileProg?.status === 'done';
+
+                return (
+                  <div key={os.id} className="bg-slate-50 p-3 rounded-xl border border-slate-100 shadow-sm">
+                    <div className="flex justify-between items-start mb-2">
+                      <div className="flex flex-col">
+                        <span className="text-[8px] font-black text-blue-600 uppercase tracking-tight">
+                          {os.osNumber && <strong className="text-slate-900 mr-1">OS {os.osNumber}</strong>}
+                          {os.tipo}
+                        </span>
+                      </div>
+                      {!isDone && (
+                        <span className="text-[7px] font-bold text-blue-500 tabular-nums">{itemProgress}%</span>
+                      )}
+                    </div>
+                    
+                    {/* Barra de progresso do quadrante */}
+                    {!isDone && (
+                      <div className="w-full h-1 bg-slate-200 rounded-full overflow-hidden mb-2">
+                        <div className="h-full bg-blue-500 transition-all duration-500" style={{ width: `${itemProgress}%` }} />
+                      </div>
+                    )}
+
+                    <div className="flex flex-wrap gap-1">
+                      {displayPlacas.map(p => {
+                        const found = laudos.some(l => normalizePlate(l.data.placa) === normalizePlate(p));
+                        return (
+                          <span 
+                            key={p} 
+                            className={`px-2 py-0.5 rounded-md text-[7px] font-black border transition-all flex items-center gap-1.5 ${
+                              found 
+                                ? 'bg-emerald-50 text-emerald-600 border-emerald-200 shadow-sm shadow-emerald-100' 
+                                : 'bg-red-50 text-red-600 border-red-200'
+                            }`}
+                          >
+                            {p}
+                            <button 
+                              onClick={(e) => { e.stopPropagation(); handleValidatePlate(p, os.fileName); }}
+                              className="text-red-500 hover:scale-125 transition-transform"
+                              title="Validar Localização (Acrobat)"
+                            >
+                              <svg className="w-2.5 h-2.5" fill="currentColor" viewBox="0 0 24 24">
+                                <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 14H9v-2h2v2zm0-4H9V7h2v5z"/>
+                              </svg>
+                            </button>
+                          </span>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
             </div>
             <label className="block text-center p-2.5 bg-blue-600 text-white rounded-xl text-[9px] font-black uppercase cursor-pointer hover:bg-blue-700 transition-all shrink-0"><input type="file" multiple onChange={handleOSUpload} className="hidden" /> + Vincular OS</label>
           </div>

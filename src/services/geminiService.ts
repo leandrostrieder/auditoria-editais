@@ -181,9 +181,12 @@ export async function parseLaudoText(text: string, modelId: AIModelId = 'gemini-
         3. INTEGRIDADE: Para o campo 'descricaoObjeto', se a instrução pedir dados da Ordem de Serviço, extraia o texto EXATO e COMPLETO da coluna 'Descrição' correspondente à placa. JAMAIS inclua informações de outras colunas (como 'Localização', 'Pátio', etc) no campo de descrição.
         4. ORIGEM DOS DADOS: Para cada campo, identifique a origem da informação no objeto 'origins'. Use:
            - 'Laudo': Se a informação veio do texto principal do laudo.
-           - 'Ordem de Serviço': Se a informação veio de um documento de referência do tipo Ordem de Serviço.
+           - 'Ordem de Serviço': Use APENAS se você localizou a placa do veículo em uma Ordem de Serviço nos <reference_documents> e extraiu os dados de lá.
            - 'Customizada': Se a informação foi gerada por uma regra lógica, valor fixo ou se não foi encontrada nos documentos e você usou um valor padrão.
-        5. FORMATAÇÃO: Retorne valores numéricos sem símbolos de moeda.
+        
+        5. VALIDAÇÃO DE ORIGEM (CRÍTICO): Se você NÃO encontrar a placa do veículo em nenhuma Ordem de Serviço nos documentos de referência, a origem do campo 'descricaoObjeto' DEVE ser 'Laudo'. É proibido marcar 'Ordem de Serviço' se a busca pela placa falhou.
+        
+        6. FORMATAÇÃO: Retorne valores numéricos sem símbolos de moeda.
         
         INSTRUÇÕES POR CAMPO:
         ${extractionInstructions}
@@ -284,7 +287,14 @@ export async function parseLaudoText(text: string, modelId: AIModelId = 'gemini-
   }
 }
 
-export async function parseOSText(text: string, tableRules: Record<string, string>, modelId: AIModelId = 'gemini-3.1-pro-preview', referenceDocs: ReferenceDoc[] = [], userContext?: any): Promise<{ groups: Array<{ tipo: AuctionCategory; placas: string[]; descriptions: Record<string, string> }> }> {
+export async function parseOSText(
+  text: string, 
+  tableRules: Record<string, string>, 
+  modelId: AIModelId = 'gemini-3.1-pro-preview', 
+  referenceDocs: ReferenceDoc[] = [], 
+  userContext?: any,
+  platesToFilter?: string[]
+): Promise<{ groups: Array<{ tipo: AuctionCategory; osNumber?: string; items: Array<{ placa: string; descricao: string }> }> }> {
   const apiKey = getApiKey();
   if (!apiKey) throw new Error("GEMINI_API_KEY not configured");
 
@@ -295,20 +305,28 @@ export async function parseOSText(text: string, tableRules: Record<string, strin
 
   const categoriesDescription = Object.entries(tableRules).map(([name, rule]) => `- CATEGORIA: ${name}\n  REGRA DE ENQUADRAMENTO: ${rule}`).join('\n\n');
 
+  const filterInstruction = platesToFilter && platesToFilter.length > 0 
+    ? `\n\nFILTRO DE BUSCA (MUITO IMPORTANTE): Extraia APENAS as informações das seguintes placas: ${platesToFilter.join(', ')}. Ignore qualquer outra placa que não esteja nesta lista.`
+    : "";
+
   try {
     const response = await ai.models.generateContent({
       model: modelId,
-      contents: `TAREFA: IDENTIFICAÇÃO DE LOTES E PLACAS (ORDEM DE SERVIÇO).\n${userRef}\nTEXTO DA OS:\n${sanitizedText}\n\n${refXml}`,
+      contents: `TAREFA: IDENTIFICAÇÃO DE LOTES E PLACAS (ORDEM DE SERVIÇO).\n${userRef}\nTEXTO DA OS:\n${sanitizedText}\n\n${refXml}${filterInstruction}`,
       config: {
         ...getModelConfig(modelId),
         systemInstruction: `VOCÊ É UM AUDITOR DE DOCUMENTOS JUDICIAIS ESPECIALISTA EM EXTRAÇÃO DE DADOS.
         
         MISSÃO: 
         1. Identificar blocos de veículos agrupados sob títulos específicos de categoria.
-        2. Extrair as placas brasileiras (7 caracteres).
+        2. Extrair TODAS as placas brasileiras (7 caracteres) presentes no texto${platesToFilter ? ' que constam na lista de filtro fornecida' : ''}. Não ignore nenhuma placa${platesToFilter ? ' da lista' : ''}.
         3. Para cada placa, extrair o texto INTEGRAL e EXATO da coluna/campo 'Descrição' correspondente. 
         
-        ATENÇÃO RIGOROSA: 
+        REGRAS DE OURO:
+        - Cada placa deve pertencer a APENAS UMA categoria. É RIGOROSAMENTE PROIBIDO duplicar uma placa em categorias diferentes.
+        - Se uma placa parecer estar sob duas categorias, atribua-a à categoria cujo título aparece imediatamente antes dela no fluxo do texto.
+        - Se uma placa aparecer no texto${platesToFilter ? ' e estiver na lista de filtro' : ''}, ela DEVE ser extraída.
+        - Se o texto estiver em formato de tabela, percorra linha por linha cuidadosamente.
         - Extraia APENAS o conteúdo da coluna de descrição técnica do bem.
         - É PROIBIDO incluir informações de outras colunas como 'Localização', 'Pátio', 'Cidade' ou 'Endereço' no campo 'descricao'.
         - Se o texto da descrição contiver quebras de linha, mantenha-as, mas não anexe dados de células vizinhas.
@@ -316,7 +334,7 @@ export async function parseOSText(text: string, tableRules: Record<string, strin
         CATEGORIAS E REGRAS DE ENQUADRAMENTO:
         ${categoriesDescription}
         
-        RETORNE JSON: {"groups": [{"tipo": "NOME EXATO DA CATEGORIA", "items": [{"placa": "PLACA1", "descricao": "DESCRIÇÃO COMPLETA"}, ...] }, ...] }`,
+        RETORNE JSON: {"groups": [{"tipo": "NOME EXATO DA CATEGORIA", "osNumber": "NÚMERO DA OS ENCONTRADO NO TOPO DA TABELA", "items": [{"placa": "PLACA1", "descricao": "DESCRIÇÃO COMPLETA"}, ...] }, ...] }`,
         responseSchema: {
           type: Type.OBJECT,
           properties: {
@@ -326,6 +344,7 @@ export async function parseOSText(text: string, tableRules: Record<string, strin
                 type: Type.OBJECT,
                 properties: {
                   tipo: { type: Type.STRING },
+                  osNumber: { type: Type.STRING, description: "Número da OS encontrado imediatamente acima ou no cabeçalho desta tabela específica." },
                   items: {
                     type: Type.ARRAY,
                     items: {
@@ -427,6 +446,72 @@ export async function testModel(modelId: AIModelId): Promise<boolean> {
     return !!response.text;
   } catch (error) {
     console.error(`[AI] Test Model Error (${modelId}):`, error);
+    throw error;
+  }
+}
+
+export async function validatePlateLocation(
+  plate: string,
+  text: string,
+  modelId: AIModelId = 'gemini-3.1-pro-preview'
+): Promise<{ evidence: string; header: string; context: string; fullTable: string; pageNumber?: number }> {
+  const apiKey = getApiKey();
+  if (!apiKey) throw new Error("GEMINI_API_KEY not configured");
+
+  const ai = new GoogleGenAI({ apiKey });
+  
+  // Otimização: Localiza a placa no texto e pega um contexto maior para reconstruir a tabela
+  const plateIndex = text.toUpperCase().indexOf(plate.toUpperCase());
+  let contextText = text;
+  if (plateIndex !== -1) {
+    const start = Math.max(0, plateIndex - 8000);
+    const end = Math.min(text.length, plateIndex + 8000);
+    contextText = text.substring(start, end);
+  }
+
+  const sanitizedText = sanitizeText(contextText);
+
+  try {
+    const response = await ai.models.generateContent({
+      model: modelId,
+      contents: `LOCALIZE A PLACA "${plate}" NO TEXTO ABAIXO E RECONSTRUA A TABELA COMPLETA. IDENTIFIQUE TAMBÉM O NÚMERO DA PÁGINA MARCADO POR [[PAGE_X]].\n\nTEXTO:\n${sanitizedText}`,
+      config: {
+        ...getModelConfig(modelId),
+        systemInstruction: `VOCÊ É UM PERITO EM RECONSTRUÇÃO DE DOCUMENTOS.
+        
+        SUA TAREFA:
+        1. Localizar a placa exata no texto.
+        2. Identificar o TÍTULO DA TABELA/SEÇÃO onde ela está.
+        3. Reconstruir a TABELA INTEIRA onde o veículo se encontra, mantendo o formato de colunas.
+        4. Identificar a linha exata do veículo.
+        5. Identificar em qual página o veículo está (procure pelo marcador [[PAGE_X]] mais próximo acima da placa).
+        
+        RETORNE JSON:
+        {
+          "header": "TÍTULO DA TABELA ENCONTRADO",
+          "evidence": "A LINHA EXATA DO VEÍCULO",
+          "fullTable": "A RECONSTRUÇÃO DA TABELA INTEIRA EM FORMATO TEXTUAL (ASCII TABLE)",
+          "context": "SNIPPET DE CONTEXTO",
+          "pageNumber": 1
+        }`,
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            header: { type: Type.STRING },
+            evidence: { type: Type.STRING },
+            fullTable: { type: Type.STRING },
+            context: { type: Type.STRING },
+            pageNumber: { type: Type.INTEGER }
+          },
+          required: ["header", "evidence", "fullTable", "context", "pageNumber"]
+        }
+      }
+    });
+
+    return JSON.parse(response.text);
+  } catch (error) {
+    console.error("Erro na validação de placa:", error);
     throw error;
   }
 }

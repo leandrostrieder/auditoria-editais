@@ -82,6 +82,8 @@ export interface AppSettings {
   tableRules: Record<string, TableRuleConfig>;
   // Documentos de referência em XML
   referenceDocs: ReferenceDoc[];
+  // Modo de extração de OS
+  osExtractionMode: 'all' | 'laudos_only';
 }
 
 export type FieldOrigin = 'Laudo' | 'Ordem de Serviço' | 'Customizada';
@@ -125,6 +127,7 @@ export interface OrderOfService {
   tipo: AuctionCategory;
   placas: string[];
   descriptions?: Record<string, string>;
+  osNumber?: string;
 }
 
 export interface FileProgress {

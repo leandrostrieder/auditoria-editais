@@ -39,7 +39,8 @@ export async function fileToText(file: File): Promise<string> {
       for (let i = 1; i <= pdf.numPages; i++) {
         const page = await pdf.getPage(i);
         const textContent = await page.getTextContent();
-        fullText += textContent.items.map((item: any) => item.str).join(" ") + "\n";
+        const pageText = textContent.items.map((item: any) => item.str).join(" ");
+        fullText += `[[PAGE_${i}]]\n${pageText}\n`;
       }
       return fullText;
     }
