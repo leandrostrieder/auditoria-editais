@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { GoogleGenAI } from "@google/genai";
 import { StepIndicator } from './components/StepIndicator';
 import { 
   AuctionCategory, 
@@ -404,6 +405,8 @@ const App: React.FC = () => {
   const [isCheckingModels, setIsCheckingModels] = useState(false);
   const [hasGeminiKey, setHasGeminiKey] = useState(false);
   const [manualKey, setManualKey] = useState<string>(() => localStorage.getItem('sg_manual_api_key') || '');
+  const [isKeyValidated, setIsKeyValidated] = useState<boolean>(!!localStorage.getItem('sg_manual_api_key'));
+  const [validationStatus, setValidationStatus] = useState<'idle' | 'validating' | 'success' | 'error'>('idle');
   const [isPaidAccount, setIsPaidAccount] = useState<boolean>(() => localStorage.getItem('sg_is_paid_account') === 'true');
   const [accountTypeStatus, setAccountTypeStatus] = useState<'checking' | 'free' | 'pro' | 'unknown'>('unknown');
 
@@ -538,17 +541,34 @@ const App: React.FC = () => {
   }, [manualKey]);
 
   const handleSaveManualKey = async () => {
-    if (manualKey.trim()) {
+    if (!manualKey.trim()) {
+      localStorage.removeItem('sg_manual_api_key');
+      localStorage.removeItem('sg_is_paid_account');
+      setManualKey('');
+      setIsPaidAccount(false);
+      checkGeminiKey();
+      alert("Chave manual removida. O sistema tentará usar a chave do servidor.");
+      return;
+    }
+    
+    setValidationStatus('validating');
+    
+    try {
+      const ai = new GoogleGenAI({ apiKey: manualKey.trim() });
+      await ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: "test",
+      });
+      
       localStorage.setItem('sg_manual_api_key', manualKey.trim());
       localStorage.setItem('sg_is_paid_account', String(isPaidAccount));
       setApiKey(manualKey.trim());
       setHasGeminiKey(true);
+      setIsKeyValidated(true);
+      setValidationStatus('success');
       
-      // Identifica o tipo de conta
       await identifyAccountType(manualKey.trim());
       
-      // Se for conta paga, usamos os créditos do INITIAL_MODELS (que agora são altos)
-      // Caso contrário, resetamos para o padrão
       setAvailableModels(INITIAL_MODELS.map(m => ({ ...m, status: 'stable' })));
       
       if (user) {
@@ -556,15 +576,11 @@ const App: React.FC = () => {
         localStorage.setItem(storageKey, JSON.stringify(INITIAL_MODELS.map(m => ({ id: m.id, credits: m.credits }))));
       }
       
-      alert(`Chave de API manual salva com sucesso! ${isPaidAccount ? 'Modo Conta Paga ativado com limites profissionais.' : 'Os créditos foram resetados visualmente.'}`);
       checkAllModels(true);
-    } else {
-      localStorage.removeItem('sg_manual_api_key');
-      localStorage.removeItem('sg_is_paid_account');
-      setManualKey('');
-      setIsPaidAccount(false);
-      checkGeminiKey();
-      alert("Chave manual removida. O sistema tentará usar a chave do servidor.");
+    } catch (error) {
+      setValidationStatus('error');
+      setIsKeyValidated(false);
+      alert("Erro ao validar chave. Verifique se a chave está correta.");
     }
   };
 
@@ -1939,144 +1955,78 @@ const App: React.FC = () => {
                   </div>
                 </div>
                ) : activeTab === 'acesso' ? (
-                <div className="space-y-6 animate-in fade-in slide-in-from-top-4">
-                  <div className="bg-blue-50 p-6 rounded-3xl border border-blue-100">
-                    <h3 className="text-blue-900 font-black text-xs uppercase tracking-tight mb-2">Configuração de IA Pro / Gemini</h3>
-                    <p className="text-[10px] text-blue-700 font-medium leading-relaxed">
-                      Para utilizar o sistema com alta performance e sem limites de cota, recomendamos o uso de uma chave de API do Google Gemini vinculada a um projeto com faturamento ativo.
+                  <div className="space-y-6 animate-in fade-in slide-in-from-top-4">
+                    <div className="bg-emerald-50 p-6 rounded-3xl border border-emerald-100">
+                    <h3 className="text-emerald-900 font-black text-xs uppercase tracking-tight mb-2">Configuração de IA (Conta Paga)</h3>
+                    <p className="text-[10px] text-emerald-800 font-medium leading-relaxed">
+                      Como você já possui uma assinatura paga do Gemini, utilize sua chave de API para acessar todos os modelos disponíveis sem custos adicionais.
                     </p>
                     
                     <div className="mt-4 space-y-2">
-                      <h4 className="text-[9px] font-black text-blue-900 uppercase">Instruções de Ativação:</h4>
-                      <ul className="text-[8px] text-blue-700 space-y-1 list-disc pl-4">
-                        <li>Acesse o <a href="https://aistudio.google.com/app/apikey" target="_blank" className="underline font-bold">Google AI Studio</a> e crie uma chave.</li>
-                        <li>No <a href="https://console.cloud.google.com/billing" target="_blank" className="underline font-bold">Google Cloud Console</a>, certifique-se de que o faturamento (Billing) está <strong>ATIVO</strong> para o projeto da chave.</li>
-                        <li>Habilite a API <strong>"Generative Language API"</strong> no seu projeto Google Cloud.</li>
-                        <li>Insira a chave no campo abaixo e clique em "Salvar".</li>
-                        <li>Use o botão <strong>"Sincronizar Modelos"</strong> para validar a conexão e créditos reais.</li>
+                      <h4 className="text-[9px] font-black text-emerald-900 uppercase">Como configurar:</h4>
+                      <ul className="text-[8px] text-emerald-800 space-y-1 list-disc pl-4">
+                        <li>Acesse o <a href="https://aistudio.google.com/app/apikey" target="_blank" className="underline font-bold">Google AI Studio</a>.</li>
+                        <li>Crie ou copie sua chave de API.</li>
+                        <li>Insira a chave abaixo e clique em "Salvar".</li>
                       </ul>
-                    </div>
-
-                    <div className="mt-4 p-3 bg-white/50 rounded-xl border border-blue-200">
-                      <p className="text-[8px] font-black text-blue-900 uppercase mb-1">URL de Redirecionamento (Callback):</p>
-                      <code className="text-[8px] font-mono text-blue-600 break-all">
-                        {window.location.origin}/auth/google/callback
-                      </code>
                     </div>
                   </div>
 
-                  {user && (
-                    <div className={`border rounded-3xl p-6 shadow-sm flex items-center justify-between ${user.isInternal ? 'bg-orange-50 border-orange-100' : 'bg-white border-slate-200'}`}>
-                      <div className="flex items-center gap-4">
-                        {user.picture ? (
-                          <img src={user.picture} alt={user.name} className={`w-12 h-12 rounded-full border-2 ${user.isInternal ? 'border-orange-400' : 'border-emerald-500'}`} referrerPolicy="no-referrer" />
-                        ) : (
-                          <div className={`w-12 h-12 rounded-full flex items-center justify-center text-white font-black text-lg ${user.isInternal ? 'bg-orange-600' : 'bg-emerald-600'}`}>
-                            {user.name?.charAt(0)}
-                          </div>
-                        )}
-                        <div>
-                          <p className="text-xs font-black text-slate-900 uppercase">{user.isInternal ? 'Conexão Automática' : 'Conta em Uso'}</p>
-                          <p className="text-[10px] font-bold text-slate-700">{user.name}</p>
-                          <p className="text-[9px] font-medium text-slate-400">{user.email}</p>
-                        </div>
-                      </div>
-                      <button 
-                        onClick={handleLogout}
-                        className="px-4 py-2 bg-red-50 text-red-600 border border-red-100 rounded-xl text-[9px] font-black uppercase hover:bg-red-100 transition-all"
-                      >
-                        Sair
-                      </button>
-                    </div>
-                  )}
-
-                  <div className="bg-emerald-50 border border-emerald-100 rounded-3xl p-6 flex flex-col gap-4">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-4">
-                        <div className={`w-12 h-12 rounded-2xl flex items-center justify-center text-white font-black text-xs ${hasGeminiKey ? 'bg-emerald-600' : 'bg-orange-500'}`}>
-                          {hasGeminiKey ? 'API' : '!'}
-                        </div>
-                        <div>
-                          <p className="text-xs font-black text-slate-900 uppercase">Chave Gemini (Faturamento)</p>
-                          <p className="text-[9px] font-medium text-slate-500 uppercase tracking-tight">
-                            {hasGeminiKey ? (isPaidAccount ? 'Conta Pro Ativa' : 'Conta Free Ativa') : 'Necessário vincular chave'}
-                          </p>
-                        </div>
-                      </div>
+                  <div className="bg-white border border-slate-200 rounded-3xl p-6 shadow-sm">
+                    <div className="flex flex-col gap-1">
+                      <label className="text-[8px] font-black text-slate-400 uppercase">Sua Chave de API (Gemini)</label>
                       <div className="flex gap-2">
+                        <input 
+                          type="password" 
+                          value={manualKey}
+                          onChange={(e) => setManualKey(e.target.value)}
+                          placeholder="Insira sua chave aqui..."
+                          disabled={isKeyValidated}
+                          className={`flex-1 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-[10px] font-mono outline-none focus:ring-1 ${isKeyValidated ? 'opacity-50 cursor-not-allowed' : 'focus:ring-emerald-500'}`}
+                        />
+                        {!isKeyValidated ? (
+                          <button 
+                            onClick={handleSaveManualKey}
+                            disabled={validationStatus === 'validating'}
+                            className="px-4 py-2 bg-emerald-600 text-white rounded-xl text-[9px] font-black uppercase hover:bg-emerald-700 transition-all disabled:opacity-50"
+                          >
+                            {validationStatus === 'validating' ? 'Validando...' : 'Salvar'}
+                          </button>
+                        ) : (
+                          <button 
+                            onClick={() => {
+                              setIsKeyValidated(false);
+                              setManualKey('');
+                              setValidationStatus('idle');
+                              localStorage.removeItem('sg_manual_api_key');
+                              setAvailableModels([]);
+                            }}
+                            className="px-4 py-2 bg-slate-200 text-slate-700 rounded-xl text-[9px] font-black uppercase hover:bg-slate-300 transition-all"
+                          >
+                            Alterar Chave
+                          </button>
+                        )}
+                      </div>
+                      {validationStatus === 'success' && (
+                        <p className="text-[9px] text-emerald-600 font-bold mt-1">Chave validada com sucesso!</p>
+                      )}
+                      {validationStatus === 'error' && (
+                        <p className="text-[9px] text-red-600 font-bold mt-1">Erro ao validar chave. Tente novamente.</p>
+                      )}
+                    </div>
+                  </div>
+
+                  {isKeyValidated && (
+                    <div className="bg-slate-50 p-6 rounded-3xl border border-slate-200">
+                      <div className="flex items-center justify-between mb-4">
+                        <h4 className="text-[10px] font-black text-slate-900 uppercase">Modelos Liberados</h4>
                         <button 
                           onClick={() => checkAllModels(true)}
                           disabled={isCheckingModels}
-                          className="px-4 py-2 bg-white text-blue-600 border border-blue-200 rounded-xl text-[9px] font-black uppercase hover:bg-blue-50 transition-all disabled:opacity-50"
+                          className="px-3 py-1 bg-white text-blue-600 border border-blue-200 rounded-lg text-[8px] font-black uppercase hover:bg-blue-50 transition-all disabled:opacity-50"
                         >
-                          {isCheckingModels ? 'Sincronizando...' : 'Sincronizar Modelos'}
+                          {isCheckingModels ? 'Sincronizando...' : 'Sincronizar'}
                         </button>
-                      </div>
-                    </div>
-
-                    <div className="space-y-3 p-4 bg-white rounded-2xl border border-emerald-100">
-                        <div className="flex flex-col gap-1">
-                          <label className="text-[8px] font-black text-slate-400 uppercase">Configuração Manual (Ambiente Externo)</label>
-                          <div className="flex gap-2">
-                            <input 
-                              type="password" 
-                              value={manualKey}
-                              onChange={(e) => setManualKey(e.target.value)}
-                              placeholder="Insira sua GEMINI_API_KEY..."
-                              className="flex-1 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-[10px] font-mono outline-none focus:ring-1 focus:ring-emerald-500"
-                            />
-                            <button 
-                              onClick={handleSaveManualKey}
-                              className="px-4 py-2 bg-emerald-600 text-white rounded-xl text-[9px] font-black uppercase hover:bg-emerald-700 transition-all"
-                            >
-                              Salvar
-                            </button>
-                          </div>
-                        </div>
-                        
-                        <label className="flex items-center gap-3 p-3 bg-slate-50 rounded-xl border border-slate-200 cursor-pointer group hover:bg-white transition-all">
-                          <input 
-                            type="checkbox" 
-                            checked={isPaidAccount}
-                            onChange={(e) => {
-                              const val = e.target.checked;
-                              setIsPaidAccount(val);
-                              localStorage.setItem('sg_is_paid_account', String(val));
-                              identifyAccountType();
-                            }}
-                            className="w-4 h-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
-                          />
-                          <div className="flex flex-col">
-                            <span className="text-[9px] font-black text-slate-700 uppercase group-hover:text-emerald-600 transition-colors">Conta com Faturamento Ativo (Pago)</span>
-                            <span className="text-[7px] text-slate-400 font-medium leading-tight mt-0.5">Habilite se sua chave for de um projeto com faturamento (Pay-as-you-go). Isso ajustará os limites de créditos exibidos no sistema para refletir a cota profissional.</span>
-                          </div>
-                        </label>
-
-                        {!isPaidAccount && (
-                          <div className="p-3 bg-orange-50 rounded-xl border border-orange-100">
-                            <p className="text-[8px] font-black text-orange-800 uppercase mb-1">Aviso de Cota (Free Tier):</p>
-                            <p className="text-[7px] text-orange-700 leading-relaxed">
-                              O Google limita contas gratuitas a <strong>20 requisições por dia</strong> em alguns modelos. 
-                              Se você atingir esse limite, o sistema mostrará "SEM CRÉDITOS" até que a cota seja renovada pelo Google. 
-                            </p>
-                          </div>
-                        )}
-                      <div className="flex flex-col gap-2">
-                        <button 
-                          onClick={handleResetCredits}
-                          className="px-4 py-2 bg-slate-100 text-slate-600 rounded-xl text-[9px] font-black uppercase hover:bg-slate-200 transition-all border border-slate-200"
-                        >
-                          Resetar Cache de Créditos
-                        </button>
-                      </div>
-                    </div>
-
-                    <div className="mt-4 p-4 bg-slate-50 rounded-2xl border border-slate-200">
-                      <div className="flex items-center justify-between mb-3">
-                        <h4 className="text-[10px] font-black text-slate-900 uppercase">Modelos Disponíveis na sua Conta</h4>
-                        <span className={`text-[8px] font-black uppercase px-2 py-0.5 rounded-full ${accountTypeStatus === 'pro' ? 'bg-emerald-100 text-emerald-700' : 'bg-blue-100 text-blue-700'}`}>
-                          {accountTypeStatus === 'pro' ? 'Google AI Pro' : 'Google AI Free'}
-                        </span>
                       </div>
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                         {availableModels.map(m => (
@@ -2085,15 +2035,6 @@ const App: React.FC = () => {
                               <span className="text-[9px] font-black text-slate-800 uppercase">{m.name}</span>
                               <div className={`w-1.5 h-1.5 rounded-full ${m.status === 'stable' ? 'bg-emerald-500' : 'bg-red-500'}`}></div>
                             </div>
-                            <div className="flex items-center justify-between mt-1">
-                              <span className="text-[7px] font-bold text-slate-400 uppercase">Créditos: {m.credits.toLocaleString()}</span>
-                              <div className="w-16 h-1 bg-slate-100 rounded-full overflow-hidden">
-                                <div 
-                                  className={`h-full transition-all duration-500 ${m.credits / m.maxCredits < 0.2 ? 'bg-red-500' : 'bg-emerald-500'}`}
-                                  style={{ width: `${(m.credits / m.maxCredits) * 100}%` }}
-                                />
-                              </div>
-                            </div>
                             {m.lastError && (
                               <p className="text-[7px] font-medium text-red-500 leading-tight mt-1">{m.lastError}</p>
                             )}
@@ -2101,58 +2042,7 @@ const App: React.FC = () => {
                         ))}
                       </div>
                     </div>
-                  </div>
-
-                  {(!user || user.isInternal) ? (
-                    <button 
-                      onClick={() => handleGoogleLogin(true)}
-                      className="w-full py-4 bg-slate-50 border border-slate-200 rounded-2xl flex items-center justify-center gap-3 group hover:bg-blue-50 hover:border-blue-200 transition-all"
-                    >
-                      <svg className="w-4 h-4 text-slate-400 group-hover:text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
-                      </svg>
-                      <span className="text-[10px] font-black text-slate-600 uppercase group-hover:text-blue-600">Entrar com Conta Google</span>
-                    </button>
-                  ) : (
-                    <button 
-                      onClick={() => handleGoogleLogin(true)}
-                      className="w-full py-4 bg-slate-50 border border-slate-200 rounded-2xl flex items-center justify-center gap-3 group hover:bg-blue-50 hover:border-blue-200 transition-all"
-                    >
-                      <svg className="w-4 h-4 text-slate-400 group-hover:text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
-                      </svg>
-                      <span className="text-[10px] font-black text-slate-600 uppercase group-hover:text-blue-600">Trocar de Conta Google</span>
-                    </button>
                   )}
-
-                  {(user && !user.isInternal) && (
-                    <button 
-                      onClick={handleUseInternalAuth}
-                      className="w-full py-4 bg-orange-50 border border-orange-100 rounded-2xl flex items-center justify-center gap-3 group hover:bg-orange-100 hover:border-orange-200 transition-all"
-                    >
-                      <svg className="w-4 h-4 text-orange-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-                      </svg>
-                      <span className="text-[10px] font-black text-orange-600 uppercase">Usar Autenticação Padrão (Interna)</span>
-                    </button>
-                  )}
-
-                  <div className="bg-slate-900 p-6 rounded-3xl">
-                    <div className="flex items-center gap-3 mb-4">
-                      <div className="w-8 h-8 bg-blue-600 rounded-xl flex items-center justify-center text-white font-black text-xs">AI</div>
-                      <h4 className="text-white font-black text-[10px] uppercase tracking-widest">Status da Referência</h4>
-                    </div>
-                    <div className="space-y-3">
-                      <div className="flex justify-between items-center py-2 border-b border-white/5">
-                        <span className="text-[9px] font-bold text-slate-400 uppercase">Contexto de Usuário</span>
-                        <span className={`text-[9px] font-black uppercase ${user ? 'text-emerald-400' : 'text-red-400'}`}>{user ? 'Habilitado' : 'Desabilitado'}</span>
-                      </div>
-                      <div className="flex justify-between items-center py-2 border-b border-white/5">
-                        <span className="text-[9px] font-bold text-slate-400 uppercase">Personalização IA</span>
-                        <span className={`text-[9px] font-black uppercase ${user ? 'text-emerald-400' : 'text-red-400'}`}>{user ? 'Ativa' : 'Inativa'}</span>
-                      </div>
-                    </div>
-                  </div>
                 </div>
               ) : null}
             </div>
