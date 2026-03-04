@@ -1939,29 +1939,46 @@ const App: React.FC = () => {
                   </div>
                 </div>
                ) : activeTab === 'acesso' ? (
-                <div className="space-y-6 animate-in fade-in slide-in-from-top-4">
-                  <div className="bg-blue-50 p-6 rounded-3xl border border-blue-100">
-                    <h3 className="text-blue-900 font-black text-xs uppercase tracking-tight mb-2">Configuração de IA Pro / Gemini</h3>
-                    <p className="text-[10px] text-blue-700 font-medium leading-relaxed">
-                      Para utilizar o sistema com alta performance e sem limites de cota, recomendamos o uso de uma chave de API do Google Gemini vinculada a um projeto com faturamento ativo.
-                    </p>
-                    
-                    <div className="mt-4 space-y-2">
-                      <h4 className="text-[9px] font-black text-blue-900 uppercase">Instruções de Ativação:</h4>
-                      <ul className="text-[8px] text-blue-700 space-y-1 list-disc pl-4">
-                        <li>Acesse o <a href="https://aistudio.google.com/app/apikey" target="_blank" className="underline font-bold">Google AI Studio</a> e crie uma chave.</li>
-                        <li>No <a href="https://console.cloud.google.com/billing" target="_blank" className="underline font-bold">Google Cloud Console</a>, certifique-se de que o faturamento (Billing) está <strong>ATIVO</strong> para o projeto da chave.</li>
-                        <li>Habilite a API <strong>"Generative Language API"</strong> no seu projeto Google Cloud.</li>
-                        <li>Insira a chave no campo abaixo e clique em "Salvar".</li>
-                        <li>Use o botão <strong>"Sincronizar Modelos"</strong> para validar a conexão e créditos reais.</li>
-                      </ul>
-                    </div>
+                <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4">
+                  <div className="bg-blue-600 p-8 rounded-[2.5rem] text-white shadow-2xl shadow-blue-200 relative overflow-hidden group">
+                    <div className="absolute top-0 right-0 w-64 h-64 bg-white/10 rounded-full -mr-32 -mt-32 blur-3xl group-hover:bg-white/20 transition-all duration-700"></div>
+                    <div className="relative z-10">
+                      <div className="flex items-center gap-4 mb-6">
+                        <div className="w-14 h-14 bg-white/20 backdrop-blur-md rounded-2xl flex items-center justify-center shadow-inner">
+                          <ShieldCheck className="w-8 h-8 text-white" />
+                        </div>
+                        <div>
+                          <h3 className="font-black text-xl uppercase tracking-tight leading-none">Conexão Inteligente</h3>
+                          <p className="text-blue-100 text-[10px] font-bold uppercase tracking-[0.2em] mt-2">Plano Google AI Ativo</p>
+                        </div>
+                      </div>
+                      
+                      <p className="text-sm text-blue-50 font-medium leading-relaxed mb-8 max-w-md">
+                        Como você já possui uma assinatura Google, utilize o botão abaixo para vincular sua conta. 
+                        O sistema identificará automaticamente seus modelos e créditos disponíveis.
+                      </p>
 
-                    <div className="mt-4 p-3 bg-white/50 rounded-xl border border-blue-200">
-                      <p className="text-[8px] font-black text-blue-900 uppercase mb-1">URL de Redirecionamento (Callback):</p>
-                      <code className="text-[8px] font-mono text-blue-600 break-all">
-                        {window.location.origin}/auth/google/callback
-                      </code>
+                      <div className="flex flex-col sm:flex-row gap-4">
+                        <button
+                          onClick={async () => {
+                            await window.aistudio.openSelectKey();
+                            await checkAllModels(true);
+                          }}
+                          className="flex-1 bg-white text-blue-600 px-8 py-4 rounded-2xl font-black uppercase text-xs tracking-widest transition-all hover:scale-[1.02] active:scale-95 shadow-xl flex items-center justify-center gap-3 group/btn"
+                        >
+                          <Key className="w-4 h-4 group-hover/btn:rotate-12 transition-transform" />
+                          Vincular Conta Google
+                        </button>
+                        
+                        <button
+                          onClick={() => checkAllModels(true)}
+                          disabled={isCheckingModels}
+                          className="px-8 py-4 bg-blue-500/30 backdrop-blur-md border border-white/20 text-white hover:bg-blue-500/50 rounded-2xl font-black uppercase text-xs tracking-widest transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+                        >
+                          <RefreshCw className={`w-4 h-4 ${isCheckingModels ? 'animate-spin' : ''}`} />
+                          Sincronizar
+                        </button>
+                      </div>
                     </div>
                   </div>
 
