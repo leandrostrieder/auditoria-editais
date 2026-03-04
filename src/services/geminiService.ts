@@ -129,7 +129,7 @@ ${rulesDescription}`,
   }
 }
 
-export async function parseLaudoText(text: string, modelId: AIModelId = 'gemini-3.1-pro-preview', customPrompts?: Record<string, string>, referenceDocs: ReferenceDoc[] = [], userContext?: any): Promise<any> {
+export async function parseLaudoText(text: string, modelId: AIModelId = 'gemini-1.5-pro', customPrompts?: Record<string, string>, referenceDocs: ReferenceDoc[] = [], userContext?: any): Promise<any> {
   const apiKey = getApiKey();
   if (!apiKey) throw new Error("GEMINI_API_KEY not configured");
 
@@ -290,7 +290,7 @@ export async function parseLaudoText(text: string, modelId: AIModelId = 'gemini-
 export async function parseOSText(
   text: string, 
   tableRules: Record<string, string>, 
-  modelId: AIModelId = 'gemini-3.1-pro-preview', 
+  modelId: AIModelId = 'gemini-1.5-pro', 
   referenceDocs: ReferenceDoc[] = [], 
   userContext?: any,
   platesToFilter?: string[]
@@ -405,14 +405,14 @@ export async function parseOSText(
 
 /**
  * Lista os modelos disponíveis para a chave de API configurada.
+ * Retorna uma lista de nomes de modelos (ex: gemini-1.5-flash).
  */
 export async function listAvailableModels(): Promise<string[]> {
   const apiKey = getApiKey();
   if (!apiKey) return [];
 
   try {
-    // O SDK @google/genai não expõe listModels diretamente de forma simples em todas as versões
-    // Vamos usar um fetch direto para a API do Google para garantir compatibilidade
+    // Usamos v1beta para listar modelos pois é onde a maioria das informações de metadados reside
     const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`);
     if (!response.ok) {
       const error = await response.json();
@@ -427,33 +427,49 @@ export async function listAvailableModels(): Promise<string[]> {
 }
 
 /**
- * Realiza um teste simples para verificar se a chave e o modelo estão operacionais.
+ * Realiza um teste de quota real para o modelo.
+ * Se retornar true, o modelo está operacional e tem créditos.
+ * Se lançar erro 429, sabemos que a quota acabou.
  */
-export async function testModel(modelId: AIModelId): Promise<boolean> {
+export async function checkModelQuota(modelId: AIModelId): Promise<{ success: boolean; error?: string; isQuotaExceeded?: boolean }> {
   const apiKey = getApiKey();
-  if (!apiKey) return false;
+  if (!apiKey) return { success: false, error: "Chave não configurada" };
 
   try {
     const ai = new GoogleGenAI({ apiKey });
+    // Teste minimalista para não gastar muitos tokens mas validar a conexão e quota
     const response = await ai.models.generateContent({
       model: modelId,
-      contents: "Responda apenas 'OK'.",
+      contents: "Respond only with '1'.",
       config: {
-        maxOutputTokens: 5,
+        maxOutputTokens: 2,
         temperature: 0.1
       }
     });
-    return !!response.text;
-  } catch (error) {
-    console.error(`[AI] Test Model Error (${modelId}):`, error);
-    throw error;
+    return { success: !!response.text };
+  } catch (error: any) {
+    const msg = String(error?.message || "").toUpperCase();
+    const isQuota = msg.includes("429") || msg.includes("QUOTA") || msg.includes("LIMIT") || msg.includes("EXHAUSTED");
+    return { 
+      success: false, 
+      error: error?.message || "Erro desconhecido", 
+      isQuotaExceeded: isQuota 
+    };
   }
+}
+
+/**
+ * Realiza um teste simples para verificar se a chave e o modelo estão operacionais.
+ */
+export async function testModel(modelId: AIModelId): Promise<boolean> {
+  const res = await checkModelQuota(modelId);
+  return res.success;
 }
 
 export async function validatePlateLocation(
   plate: string,
   text: string,
-  modelId: AIModelId = 'gemini-3.1-pro-preview'
+  modelId: AIModelId = 'gemini-1.5-pro'
 ): Promise<{ evidence: string; header: string; context: string; fullTable: string; pageNumber?: number }> {
   const apiKey = getApiKey();
   if (!apiKey) throw new Error("GEMINI_API_KEY not configured");

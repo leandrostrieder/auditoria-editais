@@ -25,7 +25,7 @@ import {
   generateNoticeDocument,
   scanTemplateFields
 } from './utils/helpers';
-import { identifyTemplateFields, parseLaudoText, parseOSText, setApiKey, getApiKey, testModel, listAvailableModels, validatePlateLocation } from './services/geminiService';
+import { identifyTemplateFields, parseLaudoText, parseOSText, setApiKey, getApiKey, testModel, listAvailableModels, validatePlateLocation, checkModelQuota } from './services/geminiService';
 
 declare global {
   interface Window {
@@ -39,10 +39,10 @@ declare global {
 declare const pdfjsLib: any;
 
 const INITIAL_MODELS: AIModelConfig[] = [
-  { id: 'gemini-3.1-pro-preview', name: 'Gemini 3.1 Pro', description: 'Máxima Inteligência (Pago)', tier: 'High', status: 'stable', credits: 1000, maxCredits: 1000 },
-  { id: 'gemini-3-flash-preview', name: 'Gemini 3 Flash', description: 'Velocidade e Precisão', tier: 'Medium', status: 'stable', credits: 2000, maxCredits: 2000 },
-  { id: 'gemini-flash-latest', name: 'Gemini Flash', description: 'Uso Geral Otimizado', tier: 'Medium', status: 'stable', credits: 5000, maxCredits: 5000 },
-  { id: 'gemini-flash-lite-latest', name: 'Gemini Flash Lite', description: 'Leve e Econômico', tier: 'Low', status: 'stable', credits: 10000, maxCredits: 10000 },
+  { id: 'gemini-1.5-pro', name: 'Gemini 1.5 Pro', description: 'Máxima Inteligência (Pago)', tier: 'High', status: 'stable', credits: 1000, maxCredits: 1000 },
+  { id: 'gemini-1.5-flash', name: 'Gemini 1.5 Flash', description: 'Velocidade e Precisão', tier: 'Medium', status: 'stable', credits: 5000, maxCredits: 5000 },
+  { id: 'gemini-1.5-flash-8b', name: 'Gemini 1.5 Flash-8B', description: 'Uso Geral Otimizado', tier: 'Medium', status: 'stable', credits: 10000, maxCredits: 10000 },
+  { id: 'gemini-2.0-flash-exp', name: 'Gemini 2.0 Flash', description: 'Nova Geração (Experimental)', tier: 'High', status: 'stable', credits: 1000, maxCredits: 1000 },
 ];
 
 const INTERNAL_USER = {
@@ -376,7 +376,7 @@ const DEFAULT_SETTINGS: AppSettings = {
 const App: React.FC = () => {
   const [currentStep, setCurrentStep] = useState(1);
   const [availableModels, setAvailableModels] = useState<AIModelConfig[]>(INITIAL_MODELS);
-  const [selectedModel, setSelectedModel] = useState<AIModelId>('gemini-3.1-pro-preview');
+  const [selectedModel, setSelectedModel] = useState<AIModelId>('gemini-1.5-pro');
   const [noticeFile, setNoticeFile] = useState<File | null>(null);
   const [docFields, setDocFields] = useState<DocField[]>([]);
   const [laudos, setLaudos] = useState<Laudo[]>([]);
@@ -426,39 +426,40 @@ const App: React.FC = () => {
       // Se o usuário já marcou manualmente ou se detectarmos via ambiente
       const isManualPaid = localStorage.getItem('sg_is_paid_account') === 'true';
       
-      if (isManualPaid) {
+      // Se houver modelos "pro" na lista, é um forte indício de conta paga ou projeto GCP
+      const hasProModels = models.some(m => m.includes('pro') && !m.includes('free'));
+
+      if (isManualPaid || hasProModels) {
         setAccountTypeStatus('pro');
         setIsPaidAccount(true);
+        localStorage.setItem('sg_is_paid_account', 'true');
         
         // Filtra os modelos para mostrar apenas os habilitados
         const enabledModelIds = models;
         const filtered = INITIAL_MODELS.filter(m => 
           enabledModelIds.some(id => id.includes(m.id) || m.id.includes(id))
         );
+        
         if (filtered.length > 0) {
           setAvailableModels(filtered.map(m => ({ 
             ...m, 
             status: 'stable',
-            // Para conta Pro, os créditos são "reais" no sentido de que não há limite diário de 20
-            // mas o sistema ainda mostra uma barra de uso baseada em um limite alto
-            maxCredits: 10000,
-            credits: 10000 
+            maxCredits: 1000000, // Limite virtual alto para Pro
+            credits: 1000000 
           })));
         }
       } else {
-        // Tenta detectar se é Pro testando um modelo que costuma ter limites baixos no Free
-        try {
-          const isPro = await testModel('gemini-3.1-pro-preview');
-          if (isPro) {
-            // Se o teste passou, ainda pode ser Free, mas se o usuário não marcou, 
-            // vamos manter como Free por segurança a menos que detectemos alta performance
-            setAccountTypeStatus('free'); 
-          } else {
-            setAccountTypeStatus('free');
-          }
-        } catch (e) {
-          setAccountTypeStatus('free');
-        }
+        setAccountTypeStatus('free');
+        setIsPaidAccount(false);
+        localStorage.setItem('sg_is_paid_account', 'false');
+        
+        // Para Free, mantemos os créditos padrão (baseados em requisições/dia)
+        setAvailableModels(INITIAL_MODELS.map(m => ({
+          ...m,
+          status: 'stable',
+          maxCredits: m.id.includes('pro') ? 50 : 1500, // Estimativa de quota free
+          credits: m.id.includes('pro') ? 50 : 1500
+        })));
       }
     } catch (e) {
       setAccountTypeStatus('unknown');
@@ -593,7 +594,6 @@ const App: React.FC = () => {
   const checkAllModels = useCallback(async (force = false) => {
     setIsCheckingModels(true);
     
-    // Verifica a chave antes de testar os modelos
     const hasKey = await checkGeminiKey();
     
     if (!hasKey) {
@@ -602,22 +602,14 @@ const App: React.FC = () => {
       return;
     }
 
-    // Identifica o tipo de conta antes de prosseguir
     await identifyAccountType();
 
-    // Se for conta Pro, vamos filtrar para mostrar apenas o que está habilitado
-    let modelsToTest = [...availableModels];
+    const enabledModelIds = await listAvailableModels();
     
-    if (isPaidAccount || accountTypeStatus === 'pro') {
-      const enabledModelIds = await listAvailableModels();
-      if (enabledModelIds.length > 0) {
-        // Filtra os modelos iniciais para manter apenas os que a API diz que existem
-        // Mas mantemos os nossos IDs mapeados
-        modelsToTest = INITIAL_MODELS.filter(m => 
-          enabledModelIds.some(id => id.includes(m.id) || m.id.includes(id))
-        );
-      }
-    }
+    // Filtra os modelos iniciais para manter apenas os que a API diz que existem
+    const modelsToTest = INITIAL_MODELS.filter(m => 
+      enabledModelIds.some(id => id.includes(m.id) || m.id.includes(id))
+    );
 
     // Testa os modelos
     const testPromises = modelsToTest.map(async (model) => {
@@ -625,39 +617,29 @@ const App: React.FC = () => {
         // Se o modelo já estiver estável e não for um teste forçado, mantemos
         if (!force && model.status === 'stable' && model.credits > 0) return model;
 
-        // Se for forçado ou estiver com erro, testamos de verdade
-        const success = await testModel(model.id);
-        return { 
-          ...model, 
-          status: success ? 'stable' as AIModelStatus : 'invalid-key' as AIModelStatus,
-          lastError: success ? undefined : 'O modelo não respondeu corretamente ao teste.'
-        };
-      } catch (err: any) {
-        const errorMsg = String(err?.message || "").toUpperCase();
-        let status: AIModelStatus = 'busy';
-        let lastError = err?.message;
-
-        if (errorMsg.includes("429") || errorMsg.includes("QUOTA") || errorMsg.includes("LIMIT")) {
-          status = 'no-credits';
-          lastError = "Cota excedida ou modelo desabilitado. Verifique se o faturamento está ativo no Google Cloud.";
-        } else if (errorMsg.includes("401") || errorMsg.includes("403") || errorMsg.includes("API_KEY_INVALID") || errorMsg.includes("PERMISSION_DENIED")) {
-          status = 'invalid-key';
-          lastError = "Chave de API inválida ou sem permissão para este modelo.";
-        } else if (errorMsg.includes("404") || errorMsg.includes("NOT_FOUND")) {
-          status = 'model-not-found';
-          lastError = "Modelo não habilitado ou não encontrado nesta conta.";
-        } else {
-          lastError = `Erro: ${err.message || 'Falha na conexão'}`;
+        // Se for Free, evitamos o teste real para não gastar quota, a menos que seja forçado
+        if (!isPaidAccount && !force) {
+          return { ...model, status: 'stable' as AIModelStatus };
         }
 
-        return { ...model, status, lastError };
+        // Teste de quota real
+        const quotaRes = await checkModelQuota(model.id);
+        
+        return { 
+          ...model, 
+          status: quotaRes.success ? 'stable' as AIModelStatus : (quotaRes.isQuotaExceeded ? 'no-credits' : 'invalid-key') as AIModelStatus,
+          lastError: quotaRes.success ? undefined : quotaRes.error,
+          credits: quotaRes.isQuotaExceeded ? 0 : model.credits
+        };
+      } catch (err: any) {
+        return { ...model, status: 'unknown' as AIModelStatus, lastError: err.message };
       }
     });
 
     const results = await Promise.all(testPromises);
     setAvailableModels(results);
     setIsCheckingModels(false);
-  }, [checkGeminiKey, availableModels]);
+  }, [checkGeminiKey, isPaidAccount, accountTypeStatus]);
 
   useEffect(() => {
     const initAuth = async () => {
@@ -839,28 +821,21 @@ const App: React.FC = () => {
   }, [checkGeminiKey, identifyAccountType]);
 
   const decrementCredits = useCallback((modelId: AIModelId) => {
-    // Se for conta Free, não decrementamos os créditos para não "gastar" a visualização
-    // e evitar confusão, já que o limite é do Google (20/dia)
-    if (!isPaidAccount && accountTypeStatus !== 'pro') return;
-
     setAvailableModels(prev => {
       const updated = prev.map(m => {
         if (m.id === modelId) {
-          // Para contas pagas (identificadas por chave manual ou padrão), o decremento é simbólico ou nulo
-          // Aqui mantemos o decremento mas com base em limites muito maiores
           const newCredits = Math.max(0, m.credits - 1);
           return { ...m, credits: newCredits, status: newCredits === 0 ? 'no-credits' : m.status };
         }
         return m;
       });
       
-      // Persiste no localStorage
       if (user) {
         const storageKey = `sg_credits_${user.email || 'guest'}`;
         localStorage.setItem(storageKey, JSON.stringify(updated.map(m => ({ id: m.id, credits: m.credits }))));
       }
       
-      return [...updated].sort((a, b) => b.credits - a.credits);
+      return updated;
     });
   }, [user]);
 
@@ -917,6 +892,12 @@ const App: React.FC = () => {
   useEffect(() => { performValidation(); }, [osList, laudos.length, performValidation]);
 
   const triggerMetaScan = async (file: File, currentSettings: AppSettings) => {
+    const currentModelData = availableModels.find(m => m.id === selectedModel);
+    if (!currentModelData || currentModelData.credits <= 0) {
+      alert("❌ Saldo de créditos insuficiente para realizar esta operação. Verifique sua chave Gemini na aba 'Acesso'.");
+      return;
+    }
+
     setIsScanningMeta(true);
     try {
       const fields = await scanTemplateFields(file, currentSettings, selectedModel, user);
@@ -1083,6 +1064,12 @@ const App: React.FC = () => {
   };
 
   const handleLaudoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const currentModelData = availableModels.find(m => m.id === selectedModel);
+    if (!currentModelData || currentModelData.credits <= 0) {
+      alert("❌ Saldo de créditos insuficiente para processar os laudos. Verifique sua chave Gemini na aba 'Acesso'.");
+      return;
+    }
+
     const files = Array.from(e.target.files || []) as File[];
     if (files.length === 0) return;
     setImportedLaudoFiles(prev => [...prev, ...files]);
@@ -1273,6 +1260,12 @@ const App: React.FC = () => {
   };
 
   const handleOSUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const currentModelData = availableModels.find(m => m.id === selectedModel);
+    if (!currentModelData || currentModelData.credits <= 0) {
+      alert("❌ Saldo de créditos insuficiente para processar as ordens de serviço. Verifique sua chave Gemini na aba 'Acesso'.");
+      return;
+    }
+
     const files = Array.from(e.target.files || []) as File[];
     if (files.length === 0) return;
     setImportedOSFiles(prev => [...prev, ...files]);
@@ -1945,13 +1938,25 @@ const App: React.FC = () => {
                     </label>
                   </div>
                 </div>
-              ) : activeTab === 'acesso' ? (
+               ) : activeTab === 'acesso' ? (
                 <div className="space-y-6 animate-in fade-in slide-in-from-top-4">
                   <div className="bg-blue-50 p-6 rounded-3xl border border-blue-100">
-                    <h3 className="text-blue-900 font-black text-xs uppercase tracking-tight mb-2">Autenticação Google</h3>
+                    <h3 className="text-blue-900 font-black text-xs uppercase tracking-tight mb-2">Configuração de IA Pro / Gemini</h3>
                     <p className="text-[10px] text-blue-700 font-medium leading-relaxed">
-                      Conecte sua conta Google para que a Inteligência Artificial utilize seu perfil e documentos autorizados como referência em todos os processos de análise do sistema.
+                      Para utilizar o sistema com alta performance e sem limites de cota, recomendamos o uso de uma chave de API do Google Gemini vinculada a um projeto com faturamento ativo.
                     </p>
+                    
+                    <div className="mt-4 space-y-2">
+                      <h4 className="text-[9px] font-black text-blue-900 uppercase">Instruções de Ativação:</h4>
+                      <ul className="text-[8px] text-blue-700 space-y-1 list-disc pl-4">
+                        <li>Acesse o <a href="https://aistudio.google.com/app/apikey" target="_blank" className="underline font-bold">Google AI Studio</a> e crie uma chave.</li>
+                        <li>No <a href="https://console.cloud.google.com/billing" target="_blank" className="underline font-bold">Google Cloud Console</a>, certifique-se de que o faturamento (Billing) está <strong>ATIVO</strong> para o projeto da chave.</li>
+                        <li>Habilite a API <strong>"Generative Language API"</strong> no seu projeto Google Cloud.</li>
+                        <li>Insira a chave no campo abaixo e clique em "Salvar".</li>
+                        <li>Use o botão <strong>"Sincronizar Modelos"</strong> para validar a conexão e créditos reais.</li>
+                      </ul>
+                    </div>
+
                     <div className="mt-4 p-3 bg-white/50 rounded-xl border border-blue-200">
                       <p className="text-[8px] font-black text-blue-900 uppercase mb-1">URL de Redirecionamento (Callback):</p>
                       <code className="text-[8px] font-mono text-blue-600 break-all">
@@ -1994,19 +1999,18 @@ const App: React.FC = () => {
                         <div>
                           <p className="text-xs font-black text-slate-900 uppercase">Chave Gemini (Faturamento)</p>
                           <p className="text-[9px] font-medium text-slate-500 uppercase tracking-tight">
-                            {hasGeminiKey ? 'Chave de API Vinculada e Ativa' : 'Necessário vincular chave para créditos'}
+                            {hasGeminiKey ? (isPaidAccount ? 'Conta Pro Ativa' : 'Conta Free Ativa') : 'Necessário vincular chave'}
                           </p>
                         </div>
                       </div>
                       <div className="flex gap-2">
-                        {window.aistudio && (
-                          <button 
-                            onClick={handleSelectGeminiKey}
-                            className={`px-4 py-2 rounded-xl text-[9px] font-black uppercase transition-all border ${hasGeminiKey ? 'bg-white text-emerald-600 border-emerald-200 hover:bg-emerald-50' : 'bg-orange-600 text-white border-orange-500 hover:bg-orange-700'}`}
-                          >
-                            {hasGeminiKey ? 'Alterar Chave' : 'Vincular Chave'}
-                          </button>
-                        )}
+                        <button 
+                          onClick={() => checkAllModels(true)}
+                          disabled={isCheckingModels}
+                          className="px-4 py-2 bg-white text-blue-600 border border-blue-200 rounded-xl text-[9px] font-black uppercase hover:bg-blue-50 transition-all disabled:opacity-50"
+                        >
+                          {isCheckingModels ? 'Sincronizando...' : 'Sincronizar Modelos'}
+                        </button>
                       </div>
                     </div>
 
@@ -2052,7 +2056,7 @@ const App: React.FC = () => {
                           <div className="p-3 bg-orange-50 rounded-xl border border-orange-100">
                             <p className="text-[8px] font-black text-orange-800 uppercase mb-1">Aviso de Cota (Free Tier):</p>
                             <p className="text-[7px] text-orange-700 leading-relaxed">
-                              O Google limita contas gratuitas a <strong>20 requisições por dia</strong> em alguns modelos (como o Flash Lite). 
+                              O Google limita contas gratuitas a <strong>20 requisições por dia</strong> em alguns modelos. 
                               Se você atingir esse limite, o sistema mostrará "SEM CRÉDITOS" até que a cota seja renovada pelo Google. 
                             </p>
                           </div>
@@ -2064,23 +2068,16 @@ const App: React.FC = () => {
                         >
                           Resetar Cache de Créditos
                         </button>
-                        <p className="text-[7px] text-slate-400 font-medium leading-relaxed">
-                          Obtenha uma chave gratuita em <a href="https://aistudio.google.com/app/apikey" target="_blank" className="text-blue-500 underline">Google AI Studio</a>.
-                        </p>
                       </div>
                     </div>
 
-                    {!hasGeminiKey && (
-                      <div className="p-3 bg-white/50 rounded-xl border border-emerald-100">
-                        <p className="text-[8px] font-bold text-emerald-800 uppercase mb-1">Dica para Ambiente Externo:</p>
-                        <p className="text-[8px] text-emerald-700 leading-relaxed">
-                          Se você estiver acessando fora do AI Studio, certifique-se de configurar a variável de ambiente <code className="bg-emerald-100 px-1 rounded">GEMINI_API_KEY</code> no seu servidor de hospedagem ou use the campo manual acima.
-                        </p>
-                      </div>
-                    )}
-
                     <div className="mt-4 p-4 bg-slate-50 rounded-2xl border border-slate-200">
-                      <h4 className="text-[10px] font-black text-slate-900 uppercase mb-3">Status dos Modelos Disponíveis</h4>
+                      <div className="flex items-center justify-between mb-3">
+                        <h4 className="text-[10px] font-black text-slate-900 uppercase">Modelos Disponíveis na sua Conta</h4>
+                        <span className={`text-[8px] font-black uppercase px-2 py-0.5 rounded-full ${accountTypeStatus === 'pro' ? 'bg-emerald-100 text-emerald-700' : 'bg-blue-100 text-blue-700'}`}>
+                          {accountTypeStatus === 'pro' ? 'Google AI Pro' : 'Google AI Free'}
+                        </span>
+                      </div>
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                         {availableModels.map(m => (
                           <div key={m.id} className="p-3 bg-white border border-slate-100 rounded-xl flex flex-col gap-1">
@@ -2088,17 +2085,20 @@ const App: React.FC = () => {
                               <span className="text-[9px] font-black text-slate-800 uppercase">{m.name}</span>
                               <div className={`w-1.5 h-1.5 rounded-full ${m.status === 'stable' ? 'bg-emerald-500' : 'bg-red-500'}`}></div>
                             </div>
-                            <p className="text-[8px] font-bold text-slate-400 uppercase">{m.description}</p>
+                            <div className="flex items-center justify-between mt-1">
+                              <span className="text-[7px] font-bold text-slate-400 uppercase">Créditos: {m.credits.toLocaleString()}</span>
+                              <div className="w-16 h-1 bg-slate-100 rounded-full overflow-hidden">
+                                <div 
+                                  className={`h-full transition-all duration-500 ${m.credits / m.maxCredits < 0.2 ? 'bg-red-500' : 'bg-emerald-500'}`}
+                                  style={{ width: `${(m.credits / m.maxCredits) * 100}%` }}
+                                />
+                              </div>
+                            </div>
                             {m.lastError && (
                               <p className="text-[7px] font-medium text-red-500 leading-tight mt-1">{m.lastError}</p>
                             )}
                           </div>
                         ))}
-                      </div>
-                      <div className="mt-4 p-3 bg-blue-50 border border-blue-100 rounded-xl">
-                        <p className="text-[8px] font-bold text-blue-700 uppercase leading-relaxed">
-                          💡 Se os modelos aparecerem com erro, verifique se você ativou o faturamento (Billing) no <a href="https://console.cloud.google.com/billing" target="_blank" className="underline">Google Cloud Console</a> e se a API "Generative Language API" está habilitada.
-                        </p>
                       </div>
                     </div>
                   </div>
@@ -2396,18 +2396,16 @@ const App: React.FC = () => {
             {currentModel && <CreditMeter model={currentModel} hasKey={hasGeminiKey} accountType={accountTypeStatus} />}
             <div className="flex flex-col items-end gap-1">
               <div className="flex items-center gap-2">
-                <select value={selectedModel} onChange={(e) => setSelectedModel(e.target.value as AIModelId)} className="bg-white border border-slate-200 rounded-xl px-3 py-1.5 text-[10px] font-black outline-none shadow-sm cursor-pointer">
-                  {availableModels
-                    .map((m: AIModelConfig) => {
-                      const perc = (m.credits / m.maxCredits) * 100;
-                      const icon = m.status === 'no-credits' || m.credits === 0 ? '🔴' : (perc < 30 ? '🟠' : '🟢');
-                      const statusText = m.status === 'stable' ? 'DISPONÍVEL' : (m.status === 'no-credits' ? 'SEM SALDO' : (m.status === 'busy' ? 'OCUPADO' : (m.status === 'model-not-found' ? 'INDISPONÍVEL' : 'VERIFICAR')));
-                      return (
-                        <option key={m.id} value={m.id}>
-                          {icon} {m.name} — {m.credits} UN ({statusText})
-                        </option>
-                      );
-                    })}
+                <select 
+                  value={selectedModel} 
+                  onChange={(e) => setSelectedModel(e.target.value as AIModelId)} 
+                  className="bg-white border border-slate-200 rounded-xl px-3 py-1.5 text-[10px] font-black outline-none shadow-sm cursor-pointer"
+                >
+                  {availableModels.map(m => (
+                    <option key={m.id} value={m.id}>
+                      {m.name} ({m.credits.toLocaleString()} Cr)
+                    </option>
+                  ))}
                 </select>
                 <button 
                   onClick={() => checkAllModels(true)} 
