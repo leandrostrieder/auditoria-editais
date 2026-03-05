@@ -43,7 +43,6 @@ const INITIAL_MODELS: AIModelConfig[] = [
   { id: 'gemini-1.5-pro', name: 'Gemini 1.5 Pro', description: 'Máxima Inteligência (Pago)', tier: 'High', status: 'stable', credits: 1000, maxCredits: 1000 },
   { id: 'gemini-1.5-flash', name: 'Gemini 1.5 Flash', description: 'Velocidade e Precisão', tier: 'Medium', status: 'stable', credits: 5000, maxCredits: 5000 },
   { id: 'gemini-1.5-flash-8b', name: 'Gemini 1.5 Flash-8B', description: 'Uso Geral Otimizado', tier: 'Medium', status: 'stable', credits: 10000, maxCredits: 10000 },
-  { id: 'gemini-2.0-flash-exp', name: 'Gemini 2.0 Flash', description: 'Nova Geração (Experimental)', tier: 'High', status: 'stable', credits: 1000, maxCredits: 1000 },
 ];
 
 const INTERNAL_USER = {
@@ -480,16 +479,7 @@ const App: React.FC = () => {
         return true;
       }
 
-      // 1. Verifica se há uma chave padrão definida no ambiente VITE (Configuração por padrão)
-      const viteKey = (import.meta as any).env.VITE_GEMINI_API_KEY;
-      if (viteKey && viteKey.length > 10) {
-        console.log("Using default VITE Gemini Key");
-        setApiKey(viteKey);
-        setHasGeminiKey(true);
-        return true;
-      }
-
-      // 2. Verifica se a chave está injetada no ambiente (process.env ou window.process.env)
+      // 1. Verifica se a chave está injetada no ambiente (process.env ou window.process.env)
       // @ts-ignore
       const globalProcess = (typeof window !== 'undefined' && (window as any).process) || (typeof process !== 'undefined' ? process : null);
       let envKey = globalProcess?.env?.GEMINI_API_KEY || globalProcess?.env?.API_KEY;
@@ -555,10 +545,20 @@ const App: React.FC = () => {
     
     try {
       const ai = new GoogleGenAI({ apiKey: manualKey.trim() });
-      await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: "test",
-      });
+      
+      // Criar uma promessa que rejeita após 10 segundos
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error("Timeout de validação")), 10000)
+      );
+
+      // Corrida entre a validação e o timeout
+      await Promise.race([
+        ai.models.generateContent({
+          model: "gemini-3-flash-preview",
+          contents: "test",
+        }),
+        timeoutPromise
+      ]);
       
       localStorage.setItem('sg_manual_api_key', manualKey.trim());
       localStorage.setItem('sg_is_paid_account', String(isPaidAccount));
@@ -577,10 +577,10 @@ const App: React.FC = () => {
       }
       
       checkAllModels(true);
-    } catch (error) {
+    } catch (error: any) {
       setValidationStatus('error');
       setIsKeyValidated(false);
-      alert("Erro ao validar chave. Verifique se a chave está correta.");
+      alert(`Erro ao validar chave: ${error.message || "Verifique se a chave está correta."}`);
     }
   };
 
@@ -1956,95 +1956,103 @@ const App: React.FC = () => {
                 </div>
                ) : activeTab === 'acesso' ? (
                   <div className="space-y-6 animate-in fade-in slide-in-from-top-4">
-                    <div className="bg-emerald-50 p-6 rounded-3xl border border-emerald-100">
-                    <h3 className="text-emerald-900 font-black text-xs uppercase tracking-tight mb-2">Configuração de IA (Conta Paga)</h3>
-                    <p className="text-[10px] text-emerald-800 font-medium leading-relaxed">
-                      Como você já possui uma assinatura paga do Gemini, utilize sua chave de API para acessar todos os modelos disponíveis sem custos adicionais.
-                    </p>
-                    
-                    <div className="mt-4 space-y-2">
-                      <h4 className="text-[9px] font-black text-emerald-900 uppercase">Como configurar:</h4>
-                      <ul className="text-[8px] text-emerald-800 space-y-1 list-disc pl-4">
-                        <li>Acesse o <a href="https://aistudio.google.com/app/apikey" target="_blank" className="underline font-bold">Google AI Studio</a>.</li>
-                        <li>Crie ou copie sua chave de API.</li>
-                        <li>Insira a chave abaixo e clique em "Salvar".</li>
-                      </ul>
+                    <div className="bg-blue-50 p-6 rounded-3xl border border-blue-100">
+                      <h3 className="text-blue-900 font-black text-xs uppercase tracking-tight mb-2">Configuração da Conta Gemini Pro</h3>
+                      <p className="text-[10px] text-blue-800 font-medium leading-relaxed">
+                        Este sistema está configurado para utilizar exclusivamente a sua conta <strong>Google AI Pro</strong>. 
+                        Insira sua chave de API abaixo para garantir que o processamento utilize seus créditos e modelos contratados.
+                      </p>
+                      
+                      <div className="mt-4 space-y-2">
+                        <h4 className="text-[9px] font-black text-blue-900 uppercase">Instruções de Acesso:</h4>
+                        <ul className="text-[8px] text-blue-800 space-y-1 list-disc pl-4">
+                          <li>Obtenha sua chave no <a href="https://aistudio.google.com/app/apikey" target="_blank" className="underline font-bold">Google AI Studio</a>.</li>
+                          <li>A conta Pro garante maior limite de requisições e acesso aos modelos mais avançados.</li>
+                          <li>Sua chave é armazenada localmente e não é compartilhada.</li>
+                        </ul>
+                      </div>
                     </div>
-                  </div>
 
-                  <div className="bg-white border border-slate-200 rounded-3xl p-6 shadow-sm">
-                    <div className="flex flex-col gap-1">
-                      <label className="text-[8px] font-black text-slate-400 uppercase">Sua Chave de API (Gemini)</label>
-                      <div className="flex gap-2">
-                        <input 
-                          type="password" 
-                          value={manualKey}
-                          onChange={(e) => setManualKey(e.target.value)}
-                          placeholder="Insira sua chave aqui..."
-                          disabled={isKeyValidated}
-                          className={`flex-1 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-[10px] font-mono outline-none focus:ring-1 ${isKeyValidated ? 'opacity-50 cursor-not-allowed' : 'focus:ring-emerald-500'}`}
-                        />
-                        {!isKeyValidated ? (
-                          <button 
-                            onClick={handleSaveManualKey}
-                            disabled={validationStatus === 'validating'}
-                            className="px-4 py-2 bg-emerald-600 text-white rounded-xl text-[9px] font-black uppercase hover:bg-emerald-700 transition-all disabled:opacity-50"
-                          >
-                            {validationStatus === 'validating' ? 'Validando...' : 'Salvar'}
-                          </button>
-                        ) : (
-                          <button 
-                            onClick={() => {
-                              setIsKeyValidated(false);
-                              setManualKey('');
-                              setValidationStatus('idle');
-                              localStorage.removeItem('sg_manual_api_key');
-                              setAvailableModels([]);
-                            }}
-                            className="px-4 py-2 bg-slate-200 text-slate-700 rounded-xl text-[9px] font-black uppercase hover:bg-slate-300 transition-all"
-                          >
-                            Alterar Chave
-                          </button>
+                    <div className="bg-white border border-slate-200 rounded-3xl p-6 shadow-sm">
+                      <div className="flex flex-col gap-1">
+                        <label className="text-[8px] font-black text-slate-400 uppercase">Chave de API do Cliente</label>
+                        <div className="flex gap-2">
+                          <input 
+                            type="password" 
+                            value={manualKey}
+                            onChange={(e) => setManualKey(e.target.value)}
+                            placeholder="Cole aqui a chave de API da sua conta Pro..."
+                            disabled={isKeyValidated}
+                            className={`flex-1 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-[10px] font-mono outline-none focus:ring-1 ${isKeyValidated ? 'opacity-50 cursor-not-allowed' : 'focus:ring-blue-500'}`}
+                          />
+                          {!isKeyValidated ? (
+                            <button 
+                              onClick={handleSaveManualKey}
+                              disabled={validationStatus === 'validating'}
+                              className="px-4 py-2 bg-blue-600 text-white rounded-xl text-[9px] font-black uppercase hover:bg-blue-700 transition-all disabled:opacity-50"
+                            >
+                              {validationStatus === 'validating' ? 'Validando...' : 'Vincular Conta'}
+                            </button>
+                          ) : (
+                            <button 
+                              onClick={() => {
+                                setIsKeyValidated(false);
+                                setManualKey('');
+                                setValidationStatus('idle');
+                                localStorage.removeItem('sg_manual_api_key');
+                                setAvailableModels([]);
+                              }}
+                              className="px-4 py-2 bg-slate-200 text-slate-700 rounded-xl text-[9px] font-black uppercase hover:bg-slate-300 transition-all"
+                            >
+                              Alterar Chave
+                            </button>
+                          )}
+                        </div>
+                        {validationStatus === 'success' && (
+                          <p className="text-[9px] text-emerald-600 font-bold mt-1 flex items-center gap-1">
+                            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" /></svg>
+                            Conta vinculada com sucesso!
+                          </p>
+                        )}
+                        {validationStatus === 'error' && (
+                          <p className="text-[9px] text-red-600 font-bold mt-1">Falha na vinculação. Verifique a chave e tente novamente.</p>
                         )}
                       </div>
-                      {validationStatus === 'success' && (
-                        <p className="text-[9px] text-emerald-600 font-bold mt-1">Chave validada com sucesso!</p>
-                      )}
-                      {validationStatus === 'error' && (
-                        <p className="text-[9px] text-red-600 font-bold mt-1">Erro ao validar chave. Tente novamente.</p>
-                      )}
                     </div>
-                  </div>
 
-                  {isKeyValidated && (
-                    <div className="bg-slate-50 p-6 rounded-3xl border border-slate-200">
-                      <div className="flex items-center justify-between mb-4">
-                        <h4 className="text-[10px] font-black text-slate-900 uppercase">Modelos Liberados</h4>
-                        <button 
-                          onClick={() => checkAllModels(true)}
-                          disabled={isCheckingModels}
-                          className="px-3 py-1 bg-white text-blue-600 border border-blue-200 rounded-lg text-[8px] font-black uppercase hover:bg-blue-50 transition-all disabled:opacity-50"
-                        >
-                          {isCheckingModels ? 'Sincronizando...' : 'Sincronizar'}
-                        </button>
-                      </div>
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                        {availableModels.map(m => (
-                          <div key={m.id} className="p-3 bg-white border border-slate-100 rounded-xl flex flex-col gap-1">
-                            <div className="flex items-center justify-between">
-                              <span className="text-[9px] font-black text-slate-800 uppercase">{m.name}</span>
-                              <div className={`w-1.5 h-1.5 rounded-full ${m.status === 'stable' ? 'bg-emerald-500' : 'bg-red-500'}`}></div>
+                    {isKeyValidated && (
+                      <div className="bg-slate-50 p-6 rounded-3xl border border-slate-200">
+                        <div className="flex items-center justify-between mb-4">
+                          <h4 className="text-[10px] font-black text-slate-900 uppercase">Status dos Modelos da sua Conta</h4>
+                          <button 
+                            onClick={() => checkAllModels(true)}
+                            disabled={isCheckingModels}
+                            className="px-3 py-1 bg-white text-blue-600 border border-blue-200 rounded-lg text-[8px] font-black uppercase hover:bg-blue-50 transition-all disabled:opacity-50"
+                          >
+                            {isCheckingModels ? 'Atualizando...' : 'Atualizar Status'}
+                          </button>
+                        </div>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                          {availableModels.map(m => (
+                            <div key={m.id} className="p-3 bg-white border border-slate-100 rounded-xl flex flex-col gap-1 shadow-sm">
+                              <div className="flex items-center justify-between">
+                                <span className="text-[9px] font-black text-slate-800 uppercase">{m.name}</span>
+                                <div className={`w-1.5 h-1.5 rounded-full ${m.status === 'stable' ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]' : 'bg-red-500'}`}></div>
+                              </div>
+                              <div className="flex justify-between items-center mt-1">
+                                <span className="text-[7px] font-bold text-slate-400 uppercase">Créditos Disponíveis</span>
+                                <span className="text-[8px] font-black text-blue-600 tabular-nums">{m.credits}/{m.maxCredits}</span>
+                              </div>
+                              {m.lastError && (
+                                <p className="text-[7px] font-medium text-red-500 leading-tight mt-1">{m.lastError}</p>
+                              )}
                             </div>
-                            {m.lastError && (
-                              <p className="text-[7px] font-medium text-red-500 leading-tight mt-1">{m.lastError}</p>
-                            )}
-                          </div>
-                        ))}
+                          ))}
+                        </div>
                       </div>
-                    </div>
-                  )}
-                </div>
-              ) : null}
+                    )}
+                  </div>
+               ) : null}
             </div>
 
             <div className="p-8 border-t border-slate-100 shrink-0 flex gap-3">

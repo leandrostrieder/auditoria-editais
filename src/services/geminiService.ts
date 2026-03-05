@@ -52,10 +52,7 @@ export function getApiKey(): string {
     key = globalProcess?.env?.GEMINI_API_KEY || globalProcess?.env?.API_KEY;
   } catch (e) {}
 
-  if (key) return key;
-  
-  // Fallback para variáveis do Vite (build time)
-  return (import.meta as any).env?.VITE_GEMINI_API_KEY || "";
+  return key || "";
 }
 
 /**
