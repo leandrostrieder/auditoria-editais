@@ -126,7 +126,7 @@ ${rulesDescription}`,
   }
 }
 
-export async function parseLaudoText(text: string, modelId: AIModelId = 'gemini-1.5-pro', customPrompts?: Record<string, string>, referenceDocs: ReferenceDoc[] = [], userContext?: any): Promise<any> {
+export async function parseLaudoText(text: string, modelId: AIModelId = 'gemini-3-flash-preview', customPrompts?: Record<string, string>, referenceDocs: ReferenceDoc[] = [], userContext?: any): Promise<any> {
   const apiKey = getApiKey();
   if (!apiKey) throw new Error("GEMINI_API_KEY not configured");
 
@@ -287,7 +287,7 @@ export async function parseLaudoText(text: string, modelId: AIModelId = 'gemini-
 export async function parseOSText(
   text: string, 
   tableRules: Record<string, string>, 
-  modelId: AIModelId = 'gemini-1.5-pro', 
+  modelId: AIModelId = 'gemini-3-flash-preview', 
   referenceDocs: ReferenceDoc[] = [], 
   userContext?: any,
   platesToFilter?: string[]
@@ -466,7 +466,7 @@ export async function testModel(modelId: AIModelId): Promise<boolean> {
 export async function validatePlateLocation(
   plate: string,
   text: string,
-  modelId: AIModelId = 'gemini-1.5-pro'
+  modelId: AIModelId = 'gemini-3-flash-preview'
 ): Promise<{ evidence: string; header: string; context: string; fullTable: string; pageNumber?: number }> {
   const apiKey = getApiKey();
   if (!apiKey) throw new Error("GEMINI_API_KEY not configured");

@@ -40,9 +40,11 @@ declare global {
 declare const pdfjsLib: any;
 
 const INITIAL_MODELS: AIModelConfig[] = [
-  { id: 'gemini-1.5-pro', name: 'Gemini 1.5 Pro', description: 'Máxima Inteligência (Pago)', tier: 'High', status: 'stable', credits: 1000, maxCredits: 1000 },
-  { id: 'gemini-1.5-flash', name: 'Gemini 1.5 Flash', description: 'Velocidade e Precisão', tier: 'Medium', status: 'stable', credits: 5000, maxCredits: 5000 },
-  { id: 'gemini-1.5-flash-8b', name: 'Gemini 1.5 Flash-8B', description: 'Uso Geral Otimizado', tier: 'Medium', status: 'stable', credits: 10000, maxCredits: 10000 },
+  { id: 'gemini-3.1-pro-preview', name: 'Gemini 3.1 Pro', description: 'Máxima Inteligência (Pago)', tier: 'High', status: 'stable', credits: 1000, maxCredits: 1000 },
+  { id: 'gemini-3-flash-preview', name: 'Gemini 3 Flash', description: 'Velocidade e Precisão', tier: 'Medium', status: 'stable', credits: 5000, maxCredits: 5000 },
+  { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', description: 'Uso Geral Otimizado', tier: 'Medium', status: 'stable', credits: 10000, maxCredits: 10000 },
+  { id: 'gemini-1.5-pro', name: 'Gemini 1.5 Pro', description: 'Legado Alta Performance', tier: 'High', status: 'stable', credits: 1000, maxCredits: 1000 },
+  { id: 'gemini-1.5-flash', name: 'Gemini 1.5 Flash', description: 'Legado Rápido', tier: 'Medium', status: 'stable', credits: 5000, maxCredits: 5000 },
 ];
 
 const INTERNAL_USER = {
@@ -376,7 +378,7 @@ const DEFAULT_SETTINGS: AppSettings = {
 const App: React.FC = () => {
   const [currentStep, setCurrentStep] = useState(1);
   const [availableModels, setAvailableModels] = useState<AIModelConfig[]>(INITIAL_MODELS);
-  const [selectedModel, setSelectedModel] = useState<AIModelId>('gemini-1.5-pro');
+  const [selectedModel, setSelectedModel] = useState<AIModelId>('gemini-3-flash-preview');
   const [noticeFile, setNoticeFile] = useState<File | null>(null);
   const [docFields, setDocFields] = useState<DocField[]>([]);
   const [laudos, setLaudos] = useState<Laudo[]>([]);
@@ -420,8 +422,18 @@ const App: React.FC = () => {
     try {
       const models = await listAvailableModels();
       
+      // Se não conseguirmos listar, mas a chave parece válida (passou no generateContent),
+      // assumimos que é uma conta Pro mas com restrição de listagem
       if (models.length === 0) {
-        setAccountTypeStatus('unknown');
+        console.warn("Could not list models, but key might be valid. Using defaults.");
+        setAccountTypeStatus('pro');
+        setIsPaidAccount(true);
+        setAvailableModels(INITIAL_MODELS.map(m => ({ 
+          ...m, 
+          status: 'stable',
+          maxCredits: 1000000,
+          credits: 1000000 
+        })));
         return;
       }
 
@@ -436,20 +448,20 @@ const App: React.FC = () => {
         setIsPaidAccount(true);
         localStorage.setItem('sg_is_paid_account', 'true');
         
-        // Filtra os modelos para mostrar apenas os habilitados
+        // Filtra os modelos para mostrar apenas os habilitados, mas se o filtro falhar, mostra todos os iniciais
         const enabledModelIds = models;
         const filtered = INITIAL_MODELS.filter(m => 
           enabledModelIds.some(id => id.includes(m.id) || m.id.includes(id))
         );
         
-        if (filtered.length > 0) {
-          setAvailableModels(filtered.map(m => ({ 
-            ...m, 
-            status: 'stable',
-            maxCredits: 1000000, // Limite virtual alto para Pro
-            credits: 1000000 
-          })));
-        }
+        const finalModels = filtered.length > 0 ? filtered : INITIAL_MODELS;
+        
+        setAvailableModels(finalModels.map(m => ({ 
+          ...m, 
+          status: 'stable',
+          maxCredits: 1000000, // Limite virtual alto para Pro
+          credits: 1000000 
+        })));
       } else {
         setAccountTypeStatus('free');
         setIsPaidAccount(false);
@@ -623,9 +635,17 @@ const App: React.FC = () => {
     const enabledModelIds = await listAvailableModels();
     
     // Filtra os modelos iniciais para manter apenas os que a API diz que existem
-    const modelsToTest = INITIAL_MODELS.filter(m => 
-      enabledModelIds.some(id => id.includes(m.id) || m.id.includes(id))
-    );
+    // Se a listagem falhar, mantemos os modelos iniciais para teste
+    const modelsToTest = enabledModelIds.length > 0 
+      ? INITIAL_MODELS.filter(m => enabledModelIds.some(id => id.includes(m.id) || m.id.includes(id)))
+      : INITIAL_MODELS;
+
+    if (modelsToTest.length === 0) {
+      console.warn("No models matched after filtering, using INITIAL_MODELS as fallback");
+      setAvailableModels(INITIAL_MODELS.map(m => ({ ...m, status: 'unknown' })));
+      setIsCheckingModels(false);
+      return;
+    }
 
     // Testa os modelos
     const testPromises = modelsToTest.map(async (model) => {
