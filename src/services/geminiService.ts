@@ -313,6 +313,7 @@ export async function parseOSText(
     : "";
 
   try {
+    console.log(`[AI] Parse OS: Sending ${sanitizedText.length} chars to ${modelId}. Filter: ${platesToFilter?.length || 0} plates.`);
     const response = await ai.models.generateContent({
       model: modelId,
       contents: `TAREFA: IDENTIFICAÇÃO DE LOTES E PLACAS (ORDEM DE SERVIÇO).\n${userRef}\nTEXTO DA OS:\n${sanitizedText}\n\n${refXml}${filterInstruction}`,
@@ -370,6 +371,7 @@ export async function parseOSText(
     });
 
     if (!response.text) throw new Error("Resposta vazia da IA na OS");
+    console.log(`[AI] Parse OS Success: ${modelId}. Response length: ${response.text.length}`);
 
     const result = JSON.parse(response.text);
     const definedCategories = Object.keys(tableRules);

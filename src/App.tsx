@@ -515,6 +515,29 @@ const App: React.FC = () => {
     return false;
   }, []);
 
+  const [manualKey, setManualKey] = useState('');
+  
+  const handleSaveManualKey = async () => {
+    if (!manualKey.trim()) {
+      alert("Por favor, insira uma chave.");
+      return;
+    }
+    
+    // Simples validação de formato
+    if (manualKey.trim().length < 20) {
+      alert("Chave inválida. Verifique o formato.");
+      return;
+    }
+    
+    // Salva a chave e força a atualização
+    localStorage.setItem('sg_manual_api_key', manualKey.trim());
+    setApiKey(manualKey.trim());
+    setHasGeminiKey(true);
+    await identifyAccountType(manualKey.trim());
+    checkAllModels(true);
+    alert("Chave aplicada com sucesso!");
+  };
+
   const handleSelectGeminiKey = async () => {
     try {
       if (window.aistudio && typeof window.aistudio.openSelectKey === 'function') {
@@ -1111,7 +1134,7 @@ const App: React.FC = () => {
         (Object.entries(settings.tableRules) as [string, TableRuleConfig][]).forEach(([k, v]) => promptRules[k] = v.prompt);
         
         // Otimização: Dividir o texto em chunks menores para processamento incremental mais rápido
-        const CHUNK_SIZE = 16000; 
+        const CHUNK_SIZE = 10000; 
         const chunks: string[] = [];
         for (let i = 0; i < text.length; i += CHUNK_SIZE) {
           // Overlap de 1500 caracteres para não perder categorias ou placas cortadas
@@ -1935,6 +1958,23 @@ const App: React.FC = () => {
                         >
                           Selecionar Chave de API
                         </button>
+                        
+                        <div className="w-full mt-4 pt-4 border-t border-slate-100">
+                          <p className="text-[9px] text-slate-500 mb-2">Ou insira manualmente:</p>
+                          <input 
+                            type="password" 
+                            value={manualKey} 
+                            onChange={(e) => setManualKey(e.target.value)}
+                            placeholder="Insira sua chave aqui..."
+                            className="w-full px-4 py-2 border border-slate-200 rounded-xl text-[10px] mb-2"
+                          />
+                          <button 
+                            onClick={handleSaveManualKey}
+                            className="w-full px-4 py-2 bg-slate-800 text-white rounded-xl text-[10px] font-black uppercase hover:bg-slate-900 transition-all"
+                          >
+                            Aplicar Chave Manual
+                          </button>
+                        </div>
                       </div>
                     </div>
 
