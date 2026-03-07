@@ -523,6 +523,8 @@ const App: React.FC = () => {
         setHasGeminiKey(true);
         await identifyAccountType();
         checkAllModels(true);
+      } else {
+        alert("O seletor de chave de API não está disponível neste ambiente. Por favor, configure a variável de ambiente GEMINI_API_KEY no seu servidor ou utilize o ambiente de preview do AI Studio.");
       }
     } catch (e) {
       console.error("Erro ao abrir seletor de chave:", e);
@@ -922,80 +924,84 @@ const App: React.FC = () => {
 
     const allRefDocs = [...settings.referenceDocs, ...osDocs];
 
-    // Processamento sequencial para evitar erro de quota (429) por excesso de requisições simultâneas
-    for (const file of files) {
-      setLaudoProgress(p => ({ ...p, [file.name]: { name: file.name, progress: 10, status: 'loading' } }));
-      try {
-        const text = await fileToText(file);
-        const rawData = await parseLaudoText(text, selectedModel, customPrompts, allRefDocs, user);
-        decrementCredits(selectedModel);
-        
-        const data: VehicleData = {
-          ...rawData,
-          lote: applyRule(rawData.lote, settings.rules.lote),
-          placa: applyRule(rawData.placa, settings.rules.placa),
-          descricaoObjeto: applyRule(rawData.descricaoObjeto, settings.rules.descricaoObjeto),
-          condicoes: applyRule(rawData.condicoes, settings.rules.condicoes),
-          valorAvaliacao: Number(applyRule(rawData.valorAvaliacao, settings.rules.valorAvaliacao)),
-          lanceInicial: Number(applyRule(rawData.lanceInicial, settings.rules.lanceInicial)),
-          incremento: Number(applyRule(rawData.incremento, settings.rules.incremento)),
-          periodoVisitacao: applyRule(rawData.periodoVisitacao, settings.rules.periodoVisitacao),
-          horarioVisitacao: applyRule(rawData.horarioVisitacao, settings.rules.horarioVisitacao),
-          horarioEncerramento: applyRule(rawData.horarioEncerramento, settings.rules.horarioEncerramento),
-          localVisitacao: applyRule(rawData.localVisitacao, settings.rules.localVisitacao),
-          contatoAgendamento: applyRule(rawData.contatoAgendamento, settings.rules.contatoAgendamento),
-          origins: { ...(rawData.origins || {}) }
-        };
+    // Processamento em lotes para otimizar velocidade respeitando limites de quota
+    const BATCH_SIZE = 3;
+    for (let i = 0; i < files.length; i += BATCH_SIZE) {
+      const batch = files.slice(i, i + BATCH_SIZE);
+      await Promise.all(batch.map(async (file) => {
+        setLaudoProgress(p => ({ ...p, [file.name]: { name: file.name, progress: 10, status: 'loading' } }));
+        try {
+          const text = await fileToText(file);
+          const rawData = await parseLaudoText(text, selectedModel, customPrompts, allRefDocs, user);
+          decrementCredits(selectedModel);
+          
+          const data: VehicleData = {
+            ...rawData,
+            lote: applyRule(rawData.lote, settings.rules.lote),
+            placa: applyRule(rawData.placa, settings.rules.placa),
+            descricaoObjeto: applyRule(rawData.descricaoObjeto, settings.rules.descricaoObjeto),
+            condicoes: applyRule(rawData.condicoes, settings.rules.condicoes),
+            valorAvaliacao: Number(applyRule(rawData.valorAvaliacao, settings.rules.valorAvaliacao)),
+            lanceInicial: Number(applyRule(rawData.lanceInicial, settings.rules.lanceInicial)),
+            incremento: Number(applyRule(rawData.incremento, settings.rules.incremento)),
+            periodoVisitacao: applyRule(rawData.periodoVisitacao, settings.rules.periodoVisitacao),
+            horarioVisitacao: applyRule(rawData.horarioVisitacao, settings.rules.horarioVisitacao),
+            horarioEncerramento: applyRule(rawData.horarioEncerramento, settings.rules.horarioEncerramento),
+            localVisitacao: applyRule(rawData.localVisitacao, settings.rules.localVisitacao),
+            contatoAgendamento: applyRule(rawData.contatoAgendamento, settings.rules.contatoAgendamento),
+            origins: { ...(rawData.origins || {}) }
+          };
 
-        // Ajusta origens baseadas nas regras aplicadas
-        (Object.entries(settings.rules) as [string, ColumnRule][]).forEach(([key, rule]) => {
-          if (rule.mode === 'fixo') {
-            if (data.origins) data.origins[key] = 'Customizada';
-          } else if (rule.mode === 'condicional') {
-            const originalValue = rawData[key as keyof typeof rawData];
-            const newValue = data[key as keyof typeof data];
-            if (originalValue !== newValue && data.origins) {
-              data.origins[key] = 'Customizada';
+          // Ajusta origens baseadas nas regras aplicadas
+          (Object.entries(settings.rules) as [string, ColumnRule][]).forEach(([key, rule]) => {
+            if (rule.mode === 'fixo') {
+              if (data.origins) data.origins[key] = 'Customizada';
+            } else if (rule.mode === 'condicional') {
+              const originalValue = rawData[key as keyof typeof rawData];
+              const newValue = data[key as keyof typeof data];
+              if (originalValue !== newValue && data.origins) {
+                data.origins[key] = 'Customizada';
+              }
+            }
+          });
+
+          const plate = normalizePlate(data.placa);
+
+          // Validação de segurança: Se a IA marcou como Ordem de Serviço mas a placa não existe em nenhuma OS carregada
+          if (data.origins?.descricaoObjeto === 'Ordem de Serviço') {
+            const plateExistsInOS = osList.some(os => os.placas.some(p => normalizePlate(p) === plate));
+            if (!plateExistsInOS) {
+              data.origins.descricaoObjeto = 'Laudo';
             }
           }
-        });
 
-        const plate = normalizePlate(data.placa);
+          let isDuplicateFound = false;
 
-        // Validação de segurança: Se a IA marcou como Ordem de Serviço mas a placa não existe em nenhuma OS carregada
-        if (data.origins?.descricaoObjeto === 'Ordem de Serviço') {
-          const plateExistsInOS = osList.some(os => os.placas.some(p => normalizePlate(p) === plate));
-          if (!plateExistsInOS) {
-            data.origins.descricaoObjeto = 'Laudo';
-          }
+          setLaudos(prev => {
+            const exists = prev.some(l => normalizePlate(l.data.placa) === plate);
+            if (exists) {
+              isDuplicateFound = true;
+              return prev;
+            }
+            return [...prev, { id: Math.random().toString(), fileName: file.name, data, isValidated: false }];
+          });
+
+          setLaudoProgress(p => ({ 
+            ...p, 
+            [file.name]: { 
+              name: file.name, 
+              progress: 100, 
+              status: 'done', 
+              info: isDuplicateFound ? `Ignorado: Placa ${plate} Duplicada` : `Placa: ${data.placa}` 
+            } 
+          }));
+        } catch (err: any) {
+          console.error("Erro no processamento do laudo:", err);
+          handleError(err, selectedModel);
+          const errorMsg = err?.message || 'Erro de Análise';
+          setLaudoProgress(p => ({ ...p, [file.name]: { name: file.name, status: 'error', progress: 0, info: errorMsg } }));
         }
-
-        let isDuplicateFound = false;
-
-        setLaudos(prev => {
-          const exists = prev.some(l => normalizePlate(l.data.placa) === plate);
-          if (exists) {
-            isDuplicateFound = true;
-            return prev;
-          }
-          return [...prev, { id: Math.random().toString(), fileName: file.name, data, isValidated: false }];
-        });
-
-        setLaudoProgress(p => ({ 
-          ...p, 
-          [file.name]: { 
-            name: file.name, 
-            progress: 100, 
-            status: 'done', 
-            info: isDuplicateFound ? `Ignorado: Placa ${plate} Duplicada` : `Placa: ${data.placa}` 
-          } 
-        }));
-      } catch (err: any) {
-        console.error("Erro no processamento do laudo:", err);
-        handleError(err, selectedModel);
-        const errorMsg = err?.message || 'Erro de Análise';
-        setLaudoProgress(p => ({ ...p, [file.name]: { name: file.name, status: 'error', progress: 0, info: errorMsg } }));
-      }
+      }));
     }
   };
 
@@ -1105,7 +1111,7 @@ const App: React.FC = () => {
         (Object.entries(settings.tableRules) as [string, TableRuleConfig][]).forEach(([k, v]) => promptRules[k] = v.prompt);
         
         // Otimização: Dividir o texto em chunks menores para processamento incremental mais rápido
-        const CHUNK_SIZE = 8000; 
+        const CHUNK_SIZE = 16000; 
         const chunks: string[] = [];
         for (let i = 0; i < text.length; i += CHUNK_SIZE) {
           // Overlap de 1500 caracteres para não perder categorias ou placas cortadas
@@ -1135,12 +1141,11 @@ const App: React.FC = () => {
             ? laudos.map(l => l.data.placa) 
             : undefined;
 
-          // OTIMIZAÇÃO CRÍTICA: Se estivermos filtrando por laudos, pula o chunk se nenhuma placa alvo estiver nele
+          // OTIMIZAÇÃO: Se estivermos filtrando por laudos, tenta otimizar, mas não pula se não encontrar placa, apenas loga.
           if (platesToFilter && platesToFilter.length > 0) {
             const hasAnyPlate = platesToFilter.some(p => chunk.toUpperCase().includes(p.toUpperCase()));
             if (!hasAnyPlate) {
-              processedChunks++;
-              continue;
+              console.log(`[OS] No plates found in chunk ${processedChunks + 1}, but processing anyway.`);
             }
           }
 
