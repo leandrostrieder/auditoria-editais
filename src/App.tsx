@@ -405,20 +405,13 @@ const App: React.FC = () => {
   const [isDisconnected, setIsDisconnected] = useState(false);
   const [isCheckingModels, setIsCheckingModels] = useState(false);
   const [hasGeminiKey, setHasGeminiKey] = useState(false);
-  const [manualKey, setManualKey] = useState<string>(() => localStorage.getItem('sg_manual_api_key') || '');
-  const [isKeyValidated, setIsKeyValidated] = useState<boolean>(!!localStorage.getItem('sg_manual_api_key'));
-  const [validationStatus, setValidationStatus] = useState<'idle' | 'validating' | 'success' | 'error'>('idle');
-  const [isPaidAccount, setIsPaidAccount] = useState<boolean>(() => localStorage.getItem('sg_is_paid_account') === 'true');
-  const [accountTypeStatus, setAccountTypeStatus] = useState<'checking' | 'free' | 'pro' | 'unknown'>('unknown');
 
   const identifyAccountType = useCallback(async (key?: string) => {
     const currentKey = key || getApiKey();
     if (!currentKey) {
-      setAccountTypeStatus('unknown');
       return;
     }
 
-    setAccountTypeStatus('checking');
     try {
       const models = await listAvailableModels();
       
@@ -426,8 +419,6 @@ const App: React.FC = () => {
       // assumimos que é uma conta Pro mas com restrição de listagem
       if (models.length === 0) {
         console.warn("Could not list models, but key might be valid. Using defaults.");
-        setAccountTypeStatus('pro');
-        setIsPaidAccount(true);
         setAvailableModels(INITIAL_MODELS.map(m => ({ 
           ...m, 
           status: 'stable',
@@ -437,16 +428,10 @@ const App: React.FC = () => {
         return;
       }
 
-      // Se o usuário já marcou manualmente ou se detectarmos via ambiente
-      const isManualPaid = localStorage.getItem('sg_is_paid_account') === 'true';
-      
       // Se houver modelos "pro" na lista, é um forte indício de conta paga ou projeto GCP
       const hasProModels = models.some(m => m.includes('pro') && !m.includes('free'));
 
-      if (isManualPaid || hasProModels) {
-        setAccountTypeStatus('pro');
-        setIsPaidAccount(true);
-        localStorage.setItem('sg_is_paid_account', 'true');
+      if (hasProModels) {
         
         // Filtra os modelos para mostrar apenas os habilitados, mas se o filtro falhar, mostra todos os iniciais
         const enabledModelIds = models;
@@ -463,9 +448,6 @@ const App: React.FC = () => {
           credits: 1000000 
         })));
       } else {
-        setAccountTypeStatus('free');
-        setIsPaidAccount(false);
-        localStorage.setItem('sg_is_paid_account', 'false');
         
         // Para Free, mantemos os créditos padrão (baseados em requisições/dia)
         setAvailableModels(INITIAL_MODELS.map(m => ({
@@ -476,21 +458,12 @@ const App: React.FC = () => {
         })));
       }
     } catch (e) {
-      setAccountTypeStatus('unknown');
     }
   }, []);
 
   const checkGeminiKey = useCallback(async () => {
-    console.log("Checking Gemini Key... Current manualKey length:", manualKey?.length || 0);
+    console.log("Checking Gemini Key...");
     try {
-      // 0. Verifica se há uma chave manual salva
-      if (manualKey && manualKey.length > 10) {
-        console.log("Using manual API key");
-        setApiKey(manualKey);
-        setHasGeminiKey(true);
-        return true;
-      }
-
       // 1. Verifica se a chave está injetada no ambiente (process.env ou window.process.env)
       // @ts-ignore
       const globalProcess = (typeof window !== 'undefined' && (window as any).process) || (typeof process !== 'undefined' ? process : null);
@@ -540,70 +513,7 @@ const App: React.FC = () => {
     console.warn("No Gemini Key detected");
     setHasGeminiKey(false);
     return false;
-  }, [manualKey]);
-
-  const handleSaveManualKey = async () => {
-    if (!manualKey.trim()) {
-      localStorage.removeItem('sg_manual_api_key');
-      localStorage.removeItem('sg_is_paid_account');
-      setManualKey('');
-      setIsPaidAccount(false);
-      checkGeminiKey();
-      alert("Chave manual removida. O sistema tentará usar a chave do servidor.");
-      return;
-    }
-    
-    setValidationStatus('validating');
-    
-    try {
-      const ai = new GoogleGenAI({ apiKey: manualKey.trim() });
-      
-      // Criar uma promessa que rejeita após 10 segundos
-      const timeoutPromise = new Promise((_, reject) => 
-        setTimeout(() => reject(new Error("Timeout de validação")), 10000)
-      );
-
-      // Corrida entre a validação e o timeout
-      await Promise.race([
-        ai.models.generateContent({
-          model: "gemini-3-flash-preview",
-          contents: "test",
-        }),
-        timeoutPromise
-      ]);
-      
-      localStorage.setItem('sg_manual_api_key', manualKey.trim());
-      localStorage.setItem('sg_is_paid_account', String(isPaidAccount));
-      setApiKey(manualKey.trim());
-      setHasGeminiKey(true);
-      setIsKeyValidated(true);
-      setValidationStatus('success');
-      
-      await identifyAccountType(manualKey.trim());
-      
-      setAvailableModels(INITIAL_MODELS.map(m => ({ ...m, status: 'stable' })));
-      
-      if (user) {
-        const storageKey = `sg_credits_${user.email || 'guest'}`;
-        localStorage.setItem(storageKey, JSON.stringify(INITIAL_MODELS.map(m => ({ id: m.id, credits: m.credits }))));
-      }
-      
-      checkAllModels(true);
-    } catch (error: any) {
-      setValidationStatus('error');
-      setIsKeyValidated(false);
-      alert(`Erro ao validar chave: ${error.message || "Verifique se a chave está correta."}`);
-    }
-  };
-
-  const handleResetCredits = () => {
-    if (user) {
-      const storageKey = `sg_credits_${user.email || 'guest'}`;
-      localStorage.removeItem(storageKey);
-      setAvailableModels(INITIAL_MODELS.map(m => ({ ...m, status: 'stable' })));
-      alert("Cache de créditos limpo com sucesso!");
-    }
-  };
+  }, []);
 
   const handleSelectGeminiKey = async () => {
     try {
@@ -630,6 +540,7 @@ const App: React.FC = () => {
       return;
     }
 
+    // Apenas identifica o tipo de conta se ainda não soubermos ou se for forçado
     await identifyAccountType();
 
     const enabledModelIds = await listAvailableModels();
@@ -647,39 +558,44 @@ const App: React.FC = () => {
       return;
     }
 
-    // Testa os modelos
-    const testPromises = modelsToTest.map(async (model) => {
+    // Testa os modelos de forma sequencial para evitar erro 429 (Too Many Requests)
+    const results: AIModelConfig[] = [];
+    for (const model of modelsToTest) {
       try {
         // Se o modelo já estiver estável e não for um teste forçado, mantemos
-        if (!force && model.status === 'stable' && model.credits > 0) return model;
-
-        // Se for Free, evitamos o teste real para não gastar quota, a menos que seja forçado
-        if (!isPaidAccount && !force) {
-          return { ...model, status: 'stable' as AIModelStatus };
+        if (!force && model.status === 'stable' && model.credits > 0) {
+          results.push(model);
+          continue;
         }
 
         // Teste de quota real
         const quotaRes = await checkModelQuota(model.id);
         
-        return { 
+        results.push({ 
           ...model, 
           status: quotaRes.success ? 'stable' as AIModelStatus : (quotaRes.isQuotaExceeded ? 'no-credits' : 'invalid-key') as AIModelStatus,
           lastError: quotaRes.success ? undefined : quotaRes.error,
           credits: quotaRes.isQuotaExceeded ? 0 : model.credits
-        };
-      } catch (err: any) {
-        return { ...model, status: 'unknown' as AIModelStatus, lastError: err.message };
-      }
-    });
+        });
 
-    const results = await Promise.all(testPromises);
+        // Pequeno delay entre testes para respeitar limites de taxa
+        if (modelsToTest.indexOf(model) < modelsToTest.length - 1) {
+          await new Promise(resolve => setTimeout(resolve, 800));
+        }
+      } catch (err: any) {
+        results.push({ ...model, status: 'unknown' as AIModelStatus, lastError: err.message });
+      }
+    }
+
     setAvailableModels(results);
     setIsCheckingModels(false);
-  }, [checkGeminiKey, isPaidAccount, accountTypeStatus]);
+  }, [checkGeminiKey, identifyAccountType]);
 
+  // Efeito de inicialização única
   useEffect(() => {
-    const initAuth = async () => {
+    const init = async () => {
       try {
+        // 1. Autenticação
         const res = await fetch('/api/auth/me');
         const data = await res.json();
         if (data.user) {
@@ -693,12 +609,17 @@ const App: React.FC = () => {
         if (!isDisconnected) await handleUseInternalAuth();
       }
       
-      // Após estabelecer o usuário, verifica a chave e testa os modelos
-      await checkGeminiKey();
-      await checkAllModels(true);
+      // 2. Chave Gemini
+      const hasKey = await checkGeminiKey();
+      
+      // 3. Identificar conta e modelos (apenas uma vez na carga)
+      if (hasKey) {
+        await identifyAccountType();
+        await checkAllModels(false); // Não força teste real de todos os modelos na carga para evitar 429
+      }
     };
 
-    initAuth();
+    init();
 
     const handleMessage = (event: MessageEvent) => {
       if (event.data?.type === 'OAUTH_AUTH_SUCCESS') {
@@ -723,44 +644,33 @@ const App: React.FC = () => {
     };
   }, [checkGeminiKey, isDisconnected]);
 
-  // Sincroniza modelos sempre que o usuário ou a chave mudar
+  // Sincroniza modelos apenas quando o usuário muda
   useEffect(() => {
-    const sync = async () => {
-      if (user) {
-        console.log(`Syncing models for user: ${user.email}`);
-        
-        // Garante que a chave seja verificada/buscada do servidor para o novo usuário
-        await checkGeminiKey();
-
-        // Carrega créditos do localStorage se existirem para este usuário
-        const storageKey = `sg_credits_${user.email || 'guest'}`;
-        const savedCredits = localStorage.getItem(storageKey);
-        
-        if (savedCredits) {
-          try {
-            const parsed = JSON.parse(savedCredits);
-            setAvailableModels(prev => {
-              const current = prev.length > 0 ? prev : INITIAL_MODELS;
-              return current.map(m => {
-                const saved = parsed.find((p: any) => p.id === m.id);
-                return saved ? { 
-                  ...m, 
-                  credits: saved.credits, 
-                  status: saved.credits === 0 ? 'no-credits' : (m.status === 'unknown' ? 'unknown' : m.status)
-                } : m;
-              });
+    if (user) {
+      console.log(`Syncing credits for user: ${user.email}`);
+      const storageKey = `sg_credits_${user.email || 'guest'}`;
+      const savedCredits = localStorage.getItem(storageKey);
+      
+      if (savedCredits) {
+        try {
+          const parsed = JSON.parse(savedCredits);
+          setAvailableModels(prev => {
+            const current = prev.length > 0 ? prev : INITIAL_MODELS;
+            return current.map(m => {
+              const saved = parsed.find((p: any) => p.id === m.id);
+              return saved ? { 
+                ...m, 
+                credits: saved.credits, 
+                status: saved.credits === 0 ? 'no-credits' : (m.status === 'unknown' ? 'unknown' : m.status)
+              } : m;
             });
-          } catch (e) {
-            console.error("Erro ao carregar créditos salvos:", e);
-            setAvailableModels(INITIAL_MODELS.map(m => ({ ...m, status: 'unknown' })));
-          }
-        } else {
-          setAvailableModels(INITIAL_MODELS.map(m => ({ ...m, status: 'unknown' })));
+          });
+        } catch (e) {
+          console.error("Erro ao carregar créditos salvos:", e);
         }
       }
-    };
-    sync();
-  }, [user, hasGeminiKey, checkGeminiKey]);
+    }
+  }, [user]);
 
   const handleGoogleLogin = async (forceSelect = false) => {
     // Abre o popup imediatamente para manter o contexto de ação do usuário e evitar bloqueios
@@ -845,16 +755,6 @@ const App: React.FC = () => {
     return saved ? JSON.parse(saved) : DEFAULT_SETTINGS;
   });
   const [tempSettings, setTempSettings] = useState<AppSettings>(settings);
-
-  useEffect(() => {
-    const init = async () => {
-      const hasKey = await checkGeminiKey();
-      if (hasKey) {
-        await identifyAccountType();
-      }
-    };
-    init();
-  }, [checkGeminiKey, identifyAccountType]);
 
   const decrementCredits = useCallback((modelId: AIModelId) => {
     setAvailableModels(prev => {
@@ -1101,8 +1001,21 @@ const App: React.FC = () => {
 
   const handleLaudoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const currentModelData = availableModels.find(m => m.id === selectedModel);
-    if (!currentModelData || currentModelData.credits <= 0) {
-      alert("❌ Saldo de créditos insuficiente para processar os laudos. Verifique sua chave Gemini na aba 'Acesso'.");
+    
+    if (!currentModelData) {
+      alert("❌ Modelo selecionado não encontrado. Por favor, selecione um modelo válido nas configurações.");
+      return;
+    }
+
+    if (currentModelData.status === 'invalid-key') {
+      alert("❌ Chave de API inválida ou não configurada. Verifique na aba 'Acesso'.");
+      setIsSettingsOpen(true);
+      setActiveTab('acesso');
+      return;
+    }
+
+    if (currentModelData.credits <= 0 || currentModelData.status === 'no-credits') {
+      alert("❌ Saldo de créditos insuficiente ou cota excedida para o modelo selecionado. Verifique sua conta Gemini.");
       return;
     }
 
@@ -1297,8 +1210,21 @@ const App: React.FC = () => {
 
   const handleOSUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const currentModelData = availableModels.find(m => m.id === selectedModel);
-    if (!currentModelData || currentModelData.credits <= 0) {
-      alert("❌ Saldo de créditos insuficiente para processar as ordens de serviço. Verifique sua chave Gemini na aba 'Acesso'.");
+    
+    if (!currentModelData) {
+      alert("❌ Modelo selecionado não encontrado. Por favor, selecione um modelo válido nas configurações.");
+      return;
+    }
+
+    if (currentModelData.status === 'invalid-key') {
+      alert("❌ Chave de API inválida ou não configurada. Verifique na aba 'Acesso'.");
+      setIsSettingsOpen(true);
+      setActiveTab('acesso');
+      return;
+    }
+
+    if (currentModelData.credits <= 0 || currentModelData.status === 'no-credits') {
+      alert("❌ Saldo de créditos insuficiente ou cota excedida para o modelo selecionado. Verifique sua conta Gemini.");
       return;
     }
 
@@ -1994,53 +1920,20 @@ const App: React.FC = () => {
                     </div>
 
                     <div className="bg-white border border-slate-200 rounded-3xl p-6 shadow-sm">
-                      <div className="flex flex-col gap-1">
-                        <label className="text-[8px] font-black text-slate-400 uppercase">Chave de API do Cliente</label>
-                        <div className="flex gap-2">
-                          <input 
-                            type="password" 
-                            value={manualKey}
-                            onChange={(e) => setManualKey(e.target.value)}
-                            placeholder="Cole aqui a chave de API da sua conta Pro..."
-                            disabled={isKeyValidated}
-                            className={`flex-1 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-[10px] font-mono outline-none focus:ring-1 ${isKeyValidated ? 'opacity-50 cursor-not-allowed' : 'focus:ring-blue-500'}`}
-                          />
-                          {!isKeyValidated ? (
-                            <button 
-                              onClick={handleSaveManualKey}
-                              disabled={validationStatus === 'validating'}
-                              className="px-4 py-2 bg-blue-600 text-white rounded-xl text-[9px] font-black uppercase hover:bg-blue-700 transition-all disabled:opacity-50"
-                            >
-                              {validationStatus === 'validating' ? 'Validando...' : 'Vincular Conta'}
-                            </button>
-                          ) : (
-                            <button 
-                              onClick={() => {
-                                setIsKeyValidated(false);
-                                setManualKey('');
-                                setValidationStatus('idle');
-                                localStorage.removeItem('sg_manual_api_key');
-                                setAvailableModels([]);
-                              }}
-                              className="px-4 py-2 bg-slate-200 text-slate-700 rounded-xl text-[9px] font-black uppercase hover:bg-slate-300 transition-all"
-                            >
-                              Alterar Chave
-                            </button>
-                          )}
-                        </div>
-                        {validationStatus === 'success' && (
-                          <p className="text-[9px] text-emerald-600 font-bold mt-1 flex items-center gap-1">
-                            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" /></svg>
-                            Conta vinculada com sucesso!
-                          </p>
-                        )}
-                        {validationStatus === 'error' && (
-                          <p className="text-[9px] text-red-600 font-bold mt-1">Falha na vinculação. Verifique a chave e tente novamente.</p>
-                        )}
+                      <div className="flex flex-col gap-4 items-center">
+                        <p className="text-[10px] text-slate-600 font-medium text-center">
+                          Clique no botão abaixo para selecionar sua chave de API de forma segura.
+                        </p>
+                        <button 
+                          onClick={handleSelectGeminiKey}
+                          className="px-6 py-3 bg-blue-600 text-white rounded-xl text-[10px] font-black uppercase hover:bg-blue-700 transition-all shadow-lg shadow-blue-600/20"
+                        >
+                          Selecionar Chave de API
+                        </button>
                       </div>
                     </div>
 
-                    {isKeyValidated && (
+                    {hasGeminiKey && (
                       <div className="bg-slate-50 p-6 rounded-3xl border border-slate-200">
                         <div className="flex items-center justify-between mb-4">
                           <h4 className="text-[10px] font-black text-slate-900 uppercase">Status dos Modelos da sua Conta</h4>
@@ -2311,7 +2204,7 @@ const App: React.FC = () => {
             </div>
           </div>
           <div className="flex flex-col sm:flex-row items-center gap-4 sm:gap-8 w-full sm:w-auto">
-            {currentModel && <CreditMeter model={currentModel} hasKey={hasGeminiKey} accountType={accountTypeStatus} />}
+            {currentModel && <CreditMeter model={currentModel} hasKey={hasGeminiKey} accountType="pro" />}
             <div className="flex flex-col items-end gap-1">
               <div className="flex items-center gap-2">
                 <select 

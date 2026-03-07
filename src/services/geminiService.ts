@@ -52,6 +52,12 @@ export function getApiKey(): string {
     key = globalProcess?.env?.GEMINI_API_KEY || globalProcess?.env?.API_KEY;
   } catch (e) {}
 
+  // Ignora chaves inválidas ou placeholders
+  if (key && (key.startsWith("GEMIN") || key.length < 20)) {
+    console.warn("[AI] getApiKey: Ignoring invalid or placeholder key:", key);
+    return "";
+  }
+
   return key || "";
 }
 
@@ -405,22 +411,44 @@ export async function parseOSText(
  * Retorna uma lista de nomes de modelos (ex: gemini-1.5-flash).
  */
 export async function listAvailableModels(): Promise<string[]> {
-  const apiKey = getApiKey();
-  if (!apiKey) return [];
-
-  try {
-    // Usamos v1beta para listar modelos pois é onde a maioria das informações de metadados reside
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`);
-    if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.error?.message || "Erro ao listar modelos");
-    }
-    const data = await response.json();
-    return data.models?.map((m: any) => m.name.replace('models/', '')) || [];
-  } catch (error) {
-    console.error("[AI] List Models Error:", error);
+  const apiKey = getApiKey()?.trim();
+  if (!apiKey || apiKey.length < 5) {
+    console.log("[AI] listAvailableModels: No API key or key too short");
     return [];
   }
+
+  console.log(`[AI] listAvailableModels: Attempting with key length ${apiKey.length}, starts with ${apiKey.substring(0, 5)}...`);
+
+  const endpoints = [
+    `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`,
+    `https://generativelanguage.googleapis.com/v1/models?key=${encodeURIComponent(apiKey)}`
+  ];
+
+  for (const url of endpoints) {
+    try {
+      console.log(`[AI] List Models fetching: ${url.split('?')[0]}`);
+      const response = await fetch(url);
+      if (response.ok) {
+        const data = await response.json();
+        if (data.models) {
+          console.log(`[AI] List Models success, found ${data.models.length} models`);
+          return data.models.map((m: any) => m.name.replace('models/', ''));
+        }
+      } else {
+        const errorData = await response.json().catch(() => ({}));
+        console.warn(`[AI] List Models attempt failed for ${url.split('?')[0]}:`, errorData.error?.message || response.statusText);
+        // Se o erro for "Invalid Argument", pode ser que a chave não tenha acesso a este endpoint
+        if (response.status === 400) {
+           console.warn(`[AI] 400 Bad Request for ${url.split('?')[0]}, skipping to next endpoint.`);
+           continue;
+        }
+      }
+    } catch (error) {
+      console.error(`[AI] List Models fetch error for ${url.split('?')[0]}:`, error);
+    }
+  }
+
+  return [];
 }
 
 /**
